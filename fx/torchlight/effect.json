@@ -1,0 +1,69 @@
+{
+  "id": "torchlight",
+  "name": "Torch-lit scene",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 48,
+    "fps": 30,
+    "frames": 36,
+    "mode": "smooth",
+    "dither": true,
+    "alphaCut": 0.5,
+    "loop": true,
+    "tile": false
+  },
+  "palette": {
+    "white": "#ffffff",
+    "torch": "#ffb35c",
+    "cool": "#7fb4ff",
+    "sky": "#8090b0",
+    "stone": "#3a3440",
+    "arc": "#9fd8ff",
+    "arcDeep": "#3a6bff",
+    "ink": "#1a1420"
+  },
+  "layers": [
+    {
+      "id": "crate",
+      "type": "sprite",
+      "label": "Crate",
+      "params": {
+        "source": "crate",
+        "scale": 0.42,
+        "offsetX": 0.25,
+        "offsetY": 0.15
+      }
+    },
+    {
+      "id": "gem",
+      "type": "sprite",
+      "label": "Gem",
+      "params": {
+        "source": "gem",
+        "scale": 0.3,
+        "offsetX": -0.35,
+        "offsetY": 0.35
+      }
+    },
+    {
+      "id": "light",
+      "type": "pathlight",
+      "label": "Path-traced light",
+      "params": {
+        "orbit": 1,
+        "l2i": 0.8,
+        "flicker": 0.15
+      }
+    }
+  ],
+  "checks": [
+    {
+      "id": "loop",
+      "label": "Loops seamlessly",
+      "metric": "loopJump",
+      "op": "<=",
+      "value": 1.5
+    }
+  ]
+}

@@ -16,6 +16,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import pngjs from 'pngjs';
 import { openEngine, sourcesBeside } from './engine.mjs';
+import { exportRuntime } from './runtime.mjs';
 
 const { PNG } = pngjs;
 const require = createRequire(import.meta.url);
@@ -427,6 +428,22 @@ const effect = loadEffect(file, opts);
     console.log(JSON.stringify(await E.call('measure', effect), null, 2));
   } else if (cmd === 'verify') {
     console.log(JSON.stringify(await verify(effect, opts), null, 2));
+  } else if (cmd === 'runtime') {
+    // live shaders + baked passes for both engines, then rendered inside each engine and compared
+    const e = FX.normalizeEffect(effect), id = e.id || 'effect';
+    const out = opts.out || path.join(ROOT, 'build', id + '_runtime');
+    E.__sources = srcs;
+    const layers = await exportRuntime(E, effect, out, srcs);
+    const report = { effect: id, layers, out, engines: {} };
+    if (opts.verify !== 'no') for (const eng of (opts.engines || 'godot,defold').split(',')) {
+      const work = path.join(ROOT, 'build', 'verify', `${eng}_${id}_runtime`), t0 = Date.now();
+      try {
+        const cap = eng === 'godot' ? verifyGodot(e, out, work) : verifyDefold(e, out, work);
+        const cmp = await compare(e, cap);
+        report.engines[eng] = { ok: !!cmp, seconds: +((Date.now() - t0) / 1000).toFixed(1), frameOffset: cmp && cmp.offset, contentError: cmp && +cmp.mean.toFixed(2), maxPixelError: cmp && Math.max(...cmp.rows.map(r => r.max)), timingSlips: cmp && cmp.slips.length, worst: cmp && cmp.rows.reduce((a, b) => (b.mae > a.mae ? b : a)) };
+      } catch (err) { report.engines[eng] = { ok: false, error: String(err.stderr || err.message).slice(-2500) }; }
+    }
+    console.log(JSON.stringify(report, null, 2));
   }
   await E.close();
 })().catch(async e => { console.error(e.stack || e); if (E) await E.close(); process.exit(1); });

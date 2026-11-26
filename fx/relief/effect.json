@@ -1,0 +1,51 @@
+{
+  "id": "relief",
+  "name": "Relief lighting",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 48,
+    "fps": 30,
+    "frames": 24,
+    "mode": "smooth",
+    "dither": true,
+    "alphaCut": 0.5,
+    "loop": false,
+    "tile": false
+  },
+  "palette": {
+    "white": "#ffffff",
+    "torch": "#ffb35c",
+    "cool": "#7fb4ff",
+    "sky": "#a8b4d0",
+    "stone": "#7a7066",
+    "arc": "#9fd8ff",
+    "arcDeep": "#3a6bff",
+    "ink": "#1a1420"
+  },
+  "layers": [
+    {
+      "id": "crate",
+      "type": "sprite",
+      "label": "Crate",
+      "params": {
+        "source": "crate",
+        "scale": 0.55
+      }
+    },
+    {
+      "id": "light",
+      "type": "pathlight",
+      "label": "Path-traced light",
+      "params": {
+        "mode": 1,
+        "backdrop": 1,
+        "sunElev": 0.3,
+        "l1i": 0,
+        "ambient": 0.35,
+        "samples": 32
+      }
+    }
+  ],
+  "checks": []
+}

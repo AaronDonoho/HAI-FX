@@ -24,14 +24,24 @@
 
   const LIB = `
 #define PI 3.14159265359
-float h21(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+// Integer hash: bit-exact on every GPU and shader compiler (float hashes drift between engines).
+// Inputs are quantised to 1/64, so integer lattice points and fixed seeds hash identically everywhere.
+float h21(vec2 p) {
+  ivec2 c = ivec2(floor(p * 64.0 + 0.5));
+  uint h = uint(c.x) * 2654435761u + uint(c.y) * 2246822519u;
+  h ^= h >> 15u; h *= 739982445u; h ^= h >> 12u; h *= 695872825u; h ^= h >> 15u;
+  return float(h >> 8u) * (1.0 / 16777216.0);
+}
 vec2 h22(vec2 p) { float n = h21(p); return vec2(n, h21(p + n + 17.17)); }
+// Wrap an integer cell index into [0, per). The +0.5 keeps it exact on every GPU: mod() at exact
+// multiples returns 0 on some drivers and per on others, which breaks tiling and engine matching.
+vec2 wrapc(vec2 i, vec2 per) { return i - per * floor((i + 0.5) / per); }
 // periodic value noise: per = period in cells (large = effectively none)
 float vnoise(vec2 p, vec2 per) {
   vec2 i = floor(p), f = fract(p), u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
   float s = u_seed * 0.6180339;
-  float a = h21(mod(i, per) + s), b = h21(mod(i + vec2(1, 0), per) + s);
-  float c = h21(mod(i + vec2(0, 1), per) + s), d = h21(mod(i + vec2(1, 1), per) + s);
+  float a = h21(wrapc(i, per) + s), b = h21(wrapc(i + vec2(1.0, 0.0), per) + s);
+  float c = h21(wrapc(i + vec2(0.0, 1.0), per) + s), d = h21(wrapc(i + vec2(1.0, 1.0), per) + s);
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 float fbm(vec2 p, vec2 per, int oct) {
@@ -43,14 +53,14 @@ float ridge(vec2 p, vec2 per, int oct) { return 1.0 - abs(fbm(p, per, oct) * 2.0
 float worley(vec2 p, vec2 per) {
   vec2 i = floor(p), f = fract(p); float d = 8.0;
   for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
-    vec2 g = vec2(float(x), float(y)); vec2 o = h22(mod(i + g, per) + u_seed);
+    vec2 g = vec2(float(x), float(y)); vec2 o = h22(wrapc(i + g, per) + u_seed);
     d = min(d, length(g + o - f));
   }
   return d;
 }
 vec2 PER(float cells) { return u_tile > 0.5 ? vec2(cells) : vec2(4096.0); }
 vec2 P(vec2 uv) { return uv * 2.0 - 1.0; }
-mat2 rot2(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+mat2 rot2(float a) { float c = cos(a), s = sin(a); return mat2(vec2(c, s), vec2(-s, c)); }
 float sdSeg(vec2 p, vec2 a, vec2 b) { vec2 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0); return length(pa - ba * h); }
 float ease(float id, float t) {
   t = clamp(t, 0.0, 1.0); int k = int(id + 0.5);
@@ -71,7 +81,7 @@ float lumi(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 `;
 
   // A sprite source is fitted inside the frame, centred, then scaled/offset/rotated by the layer.
-  const SRC = name => `
+  const SRC = (name, premulInShader, flipV) => `
 vec2 srcUV_${name}(vec2 uv, float scale, vec2 off, float rotDeg) {
   vec2 sz = max(u_${name}_size, vec2(1.0));
   vec2 fit = sz / max(sz.x, sz.y);
@@ -80,7 +90,8 @@ vec2 srcUV_${name}(vec2 uv, float scale, vec2 off, float rotDeg) {
 }
 vec4 src_${name}(vec2 st) {
   if (st.x < 0.0 || st.y < 0.0 || st.x > 1.0 || st.y > 1.0) return vec4(0.0);
-  return texture(s_${name}, st);
+  vec4 c = texture(s_${name}, ${flipV ? 'vec2(st.x, 1.0 - st.y)' : 'st'});
+  return ${premulInShader ? 'vec4(c.rgb * c.a, c.a)' : 'c'};
 }
 `;
 
@@ -310,7 +321,7 @@ vec4 fx(vec2 uv) {
   vec3 n = normalize(vec3(-g * rim * 1.4, 1.0));
   vec3 L = normalize(vec3(-Ld, 1.0));
   float diff = max(dot(n, L), 0.0);
-  float spec = pow(max(dot(reflect(-L, n), vec3(0, 0, 1)), 0.0), 16.0) * u_shine;
+  float spec = pow(max(dot(reflect(-L, n), vec3(0.0, 0.0, 1.0)), 0.0), 16.0) * u_shine;
   vec3 col = mix(u_colorDark, u_colorMetal, 0.35 + 0.65 * diff) + u_colorEdge * spec;
   col *= 0.92 + 0.08 * fbm(p * 18.0, vec2(4096.0), 3);
   vec4 gearC = vec4(col * cov, cov);
@@ -375,13 +386,13 @@ vec4 fx(vec2 uv) {
   float e = 0.0;
   if (m == 2) {
     vec2 o = stepv;
-    float gx = Lc(st + vec2(o.x, 0)) - Lc(st - vec2(o.x, 0)) + 0.5 * (Lc(st + o) - Lc(st - o) + Lc(st + vec2(o.x, -o.y)) - Lc(st + vec2(-o.x, o.y)));
-    float gy = Lc(st + vec2(0, o.y)) - Lc(st - vec2(0, o.y)) + 0.5 * (Lc(st + o) - Lc(st - o) - Lc(st + vec2(o.x, -o.y)) + Lc(st + vec2(-o.x, o.y)));
+    float gx = Lc(st + vec2(o.x, 0.0)) - Lc(st - vec2(o.x, 0.0)) + 0.5 * (Lc(st + o) - Lc(st - o) + Lc(st + vec2(o.x, -o.y)) - Lc(st + vec2(-o.x, o.y)));
+    float gy = Lc(st + vec2(0.0, o.y)) - Lc(st - vec2(0.0, o.y)) + 0.5 * (Lc(st + o) - Lc(st - o) - Lc(st + vec2(o.x, -o.y)) + Lc(st + vec2(-o.x, o.y)));
     float g = length(vec2(gx, gy));
     float best = g;
     for (int i = 0; i < 12; i++) { float an = float(i) * PI / 6.0; vec2 dd = vec2(cos(an), sin(an)) * stepv * u_width;
       vec2 s2 = st + dd;
-      float gx2 = Lc(s2 + vec2(o.x, 0)) - Lc(s2 - vec2(o.x, 0)); float gy2 = Lc(s2 + vec2(0, o.y)) - Lc(s2 - vec2(0, o.y));
+      float gx2 = Lc(s2 + vec2(o.x, 0.0)) - Lc(s2 - vec2(o.x, 0.0)); float gy2 = Lc(s2 + vec2(0.0, o.y)) - Lc(s2 - vec2(0.0, o.y));
       best = max(best, length(vec2(gx2, gy2)) * 0.85); }
     e = smoothstep(u_threshold, u_threshold + 0.05 + u_softness * 0.5, best);
   } else {
@@ -422,12 +433,12 @@ vec4 fx(vec2 uv) {
   vec4 c = src_source(st);
   if (c.a <= 0.0) return vec4(0.0);
   vec2 o = vec2(1.0 / u_size) / max(u_scale, 1e-3);
-  float hx = HT(st + vec2(o.x, 0), o) - HT(st - vec2(o.x, 0), o), hy = HT(st + vec2(0, o.y), o) - HT(st - vec2(0, o.y), o);
+  float hx = HT(st + vec2(o.x, 0.0), o) - HT(st - vec2(o.x, 0.0), o), hy = HT(st + vec2(0.0, o.y), o) - HT(st - vec2(0.0, o.y), o);
   vec3 n = normalize(vec3(-hx * u_depth * 4.0, -hy * u_depth * 4.0, 1.0));
   float la = u_lightAngle * PI / 180.0 + 2.0 * PI * u_orbit * (u_loop > 0.5 ? u_phase : u_time * 0.1);
   vec3 L = normalize(vec3(cos(la) * (1.0 - u_elevation), sin(la) * (1.0 - u_elevation), u_elevation + 0.05));
   float diff = max(dot(n, L), 0.0);
-  float spec = pow(max(dot(reflect(-L, n), vec3(0, 0, 1)), 0.0), 20.0) * u_specular;
+  float spec = pow(max(dot(reflect(-L, n), vec3(0.0, 0.0, 1.0)), 0.0), 20.0) * u_specular;
   float rim = pow(1.0 - n.z, 2.0) * u_rim * max(dot(normalize(n.xy + 1e-5), normalize(L.xy + 1e-5)), 0.0);
   vec3 base = c.rgb / c.a;
   vec3 col = base * (u_colorAmbient * u_ambient + u_colorLight * diff * u_intensity) + u_colorLight * (spec + rim);
@@ -526,6 +537,159 @@ vec4 fx(vec2 uv) {
   r.rgb = mix(r.rgb, u_colorTint * r.a, u_tint);
   float fa = (1.0 - smoothstep(0.0, u_fade * 0.5, dy)) * u_opacity;
   return base + r * fa * (1.0 - base.a);
+}`,
+    },
+    pathlight: {
+      label: 'Path-traced light', blend: 'replace', readsBelow: true,
+      params: [
+        P('mode', 'Mode', 'choice', 0, { options: ['Scene (2D)', 'Relief (2.5D)'], group: SH }),
+        P('samples', 'Rays per pixel', 'int', 48, { min: 4, max: 256, help: 'More rays = smoother light and shadows, slower render.', group: SH }),
+        P('steps', 'Steps per ray', 'int', 40, { min: 8, max: 128, group: SH }),
+        P('reach', 'Ray reach', 'num', 1.2, { min: 0.1, max: 3, step: 0.01, unit: 'u', group: SH }),
+        P('occlude', 'Solid above alpha', 'num', 0.5, { min: 0.05, max: 1, step: 0.01, group: SH }),
+        P('emitThreshold', 'Emits above brightness', 'num', 0.75, { min: 0, max: 1.01, step: 0.01, help: 'Pixels below this layer brighter than this act as lights.', group: LK }),
+        P('emit', 'Emitted light', 'num', 2, { min: 0, max: 8, step: 0.05, group: LK }),
+        P('bounce', 'Bounce light', 'num', 0.5, { min: 0, max: 2, step: 0.01, group: LK }),
+        P('ambient', 'Ambient', 'num', 0.12, { min: 0, max: 1, step: 0.01, group: LK }),
+        P('backdrop', 'Backdrop', 'num', 1, { min: 0, max: 1, step: 0.01, help: 'A surface behind everything that receives light and shadow (wall in 2D, ground in relief).', group: LK }),
+        P('l1x', 'Light 1 X', 'num', -0.55, { min: -1.5, max: 1.5, step: 0.01, unit: 'u', group: 'Light 1' }), P('l1y', 'Light 1 Y', 'num', -0.45, { min: -1.5, max: 1.5, step: 0.01, unit: 'u', group: 'Light 1' }),
+        P('l1r', 'Light 1 size', 'num', 0.08, { min: 0.005, max: 0.5, step: 0.005, unit: 'u', group: 'Light 1' }), P('l1i', 'Light 1 power', 'num', 1.4, { min: 0, max: 6, step: 0.05, group: 'Light 1' }),
+        P('l1h', 'Light 1 height', 'num', 0.5, { min: 0, max: 2, step: 0.01, unit: 'u', help: 'Relief mode only.', group: 'Light 1' }),
+        P('orbit', 'Light 1 orbit', 'num', 0, { min: -4, max: 4, step: 1, help: 'Turns around the centre per loop.', group: 'Light 1' }),
+        P('flicker', 'Light 1 flicker', 'num', 0, { min: 0, max: 1, step: 0.01, group: 'Light 1' }),
+        P('colorL1', 'Light 1 colour', 'color', 'torch', { group: 'Light 1' }),
+        P('l2x', 'Light 2 X', 'num', 0.7, { min: -1.5, max: 1.5, step: 0.01, unit: 'u', group: 'Light 2' }), P('l2y', 'Light 2 Y', 'num', 0.5, { min: -1.5, max: 1.5, step: 0.01, unit: 'u', group: 'Light 2' }),
+        P('l2r', 'Light 2 size', 'num', 0.12, { min: 0.005, max: 0.5, step: 0.005, unit: 'u', group: 'Light 2' }), P('l2i', 'Light 2 power', 'num', 0, { min: 0, max: 6, step: 0.05, group: 'Light 2' }),
+        P('colorL2', 'Light 2 colour', 'color', 'cool', { group: 'Light 2' }),
+        P('depth', 'Relief depth', 'num', 0.25, { min: 0.01, max: 1, step: 0.01, unit: 'u', group: 'Relief' }), P('soft', 'Relief rounding', 'num', 3, { min: 0, max: 12, step: 0.5, unit: 'px', group: 'Relief' }),
+        P('sunAngle', 'Sun direction', 'angle', -135, { min: -180, max: 180, step: 1, unit: '°', group: 'Relief' }), P('sunElev', 'Sun height', 'num', 0.35, { min: 0.05, max: 1, step: 0.01, group: 'Relief' }),
+        P('sunSize', 'Sun size', 'num', 0.08, { min: 0, max: 0.6, step: 0.01, help: 'Bigger = softer shadows.', group: 'Relief' }), P('sun', 'Sun power', 'num', 1.1, { min: 0, max: 4, step: 0.05, group: 'Relief' }),
+        P('colorAmbient', 'Ambient / sky', 'color', 'sky', { group: CO }), P('colorSun', 'Sun', 'color', 'white', { group: CO }), P('colorBackdrop', 'Backdrop', 'color', 'stone', { group: CO }),
+      ],
+      glsl: `
+// Every read of the layers below goes through BELOW() inside fx(), so runtime export can redirect it.
+#define BELOW(q) texture(b_below, q)
+#define INSIDE(q) (q.x >= 0.0 && q.y >= 0.0 && q.x <= 1.0 && q.y <= 1.0)
+float rnd(vec2 px, float i) { return h21(px * 7.0 + vec2(i * 13.0 + 0.5, i * 29.0 + 3.0)); }
+vec2 light1() {
+  float a = 2.0 * PI * u_orbit * (u_loop > 0.5 ? u_phase : u_time * 0.1);
+  return rot2(a) * vec2(u_l1x, u_l1y);
+}
+float falloff(float d, float r) { return 1.0 / (1.0 + pow(d / max(r * 4.0, 0.05), 2.0)); }
+vec4 fx(vec2 uv) {
+  vec2 px = floor(uv * u_size);
+  vec4 base = BELOW(uv);
+  bool solid = base.a > u_occlude;
+  vec3 alb = base.a > 0.0 ? base.rgb / base.a : u_colorBackdrop;
+  vec2 p = P(uv);
+  int ns = int(u_samples + 0.5), nt = int(u_steps + 0.5);
+  float fl = 1.0 - u_flicker * h21(vec2(floor(u_frame / 2.0), 5.0));
+  vec2 L1 = light1(), L2 = vec2(u_l2x, u_l2y);
+  vec3 direct = vec3(0.0), ind = vec3(0.0);
+  float sky = 1.0;
+  if (u_mode < 0.5) {
+    // ---- 2D scene: soft shadows from the lights, light from bright pixels, one bounce
+    for (int k = 0; k < 2; k++) {
+      vec2 Lc = k == 0 ? L1 : L2; float Lr = k == 0 ? u_l1r : u_l2r;
+      float Li = (k == 0 ? u_l1i * fl : u_l2i);
+      if (Li <= 0.0) continue;
+      int nl = max(1, ns / 6); float vis = 0.0;
+      for (int s = 0; s < 64; s++) {
+        if (s >= nl) break;
+        float ra = rnd(px, float(s) + 100.0 * float(k + 1)) * 2.0 * PI, rr = sqrt(rnd(px, float(s) + 300.0)) * Lr;
+        vec2 tgt = (Lc + vec2(cos(ra), sin(ra)) * rr + 1.0) * 0.5;
+        bool outside = !solid; float v = 1.0;
+        for (int j = 1; j <= 128; j++) {
+          if (j > nt) break;
+          vec2 q = mix(uv, tgt, float(j) / float(nt));
+          if (BELOW(q).a > u_occlude) { if (outside) { v = 0.0; break; } } else outside = true;
+        }
+        vis += v;
+      }
+      direct += (k == 0 ? u_colorL1 : u_colorL2) * Li * falloff(length(p - Lc), Lr) * vis / float(nl);
+    }
+    for (int i = 0; i < 256; i++) {
+      if (i >= ns) break;
+      float a = (float(i) + rnd(px, float(i))) / float(ns) * 2.0 * PI;
+      vec2 dir = vec2(cos(a), sin(a)) * u_reach * 0.5;
+      bool outside = !solid;
+      for (int j = 1; j <= 128; j++) {
+        if (j > nt) break;
+        vec2 q = uv + dir * (float(j) / float(nt));
+        if (!INSIDE(q)) break;
+        vec4 c = BELOW(q);
+        if (c.a <= 0.02) { outside = true; continue; }
+        vec3 ca = c.rgb / c.a;
+        if (lumi(ca) * c.a >= u_emitThreshold * 0.9) { if (outside || !solid) { ind += ca * c.a * u_emit; break; } }
+        if (c.a > u_occlude) {
+          if (!outside) continue;
+          vec2 qp = q * 2.0 - 1.0;
+          vec3 lq = u_colorL1 * u_l1i * fl * falloff(length(qp - L1), u_l1r) + u_colorL2 * u_l2i * falloff(length(qp - L2), u_l2r);
+          ind += ca * lq * u_bounce;
+          break;
+        }
+        outside = true;
+      }
+    }
+    ind /= float(ns);
+  } else {
+    // ---- relief: sprites become height fields; sun with soft shadows, sky occlusion, point light
+    #define HGT(q) (u_depth * (0.2 * step(u_occlude, BELOW(q).a) + 0.8 * (BELOW(q + vec2(o.x, 0.0)).a + BELOW(q - vec2(o.x, 0.0)).a + BELOW(q + vec2(0.0, o.y)).a + BELOW(q - vec2(0.0, o.y)).a) * 0.25))
+    vec2 o = vec2(max(u_soft, 0.5) / u_size);
+    float h0 = HGT(uv);
+    vec2 grad = vec2(HGT(uv + vec2(1.0 / u_size, 0.0)) - HGT(uv - vec2(1.0 / u_size, 0.0)), HGT(uv + vec2(0.0, 1.0 / u_size)) - HGT(uv - vec2(0.0, 1.0 / u_size))) * u_size * 0.25;
+    vec3 n = normalize(vec3(-grad, 1.0));
+    float az = u_sunAngle * PI / 180.0, el = u_sunElev * PI * 0.5;
+    int nl = max(1, ns / 4); float vis = 0.0;
+    for (int s = 0; s < 64; s++) {
+      if (s >= nl) break;
+      float ja = az + (rnd(px, float(s) + 50.0) - 0.5) * u_sunSize * 2.0, je = el + (rnd(px, float(s) + 70.0) - 0.5) * u_sunSize;
+      vec3 d = vec3(cos(ja) * cos(je), sin(ja) * cos(je), sin(je));
+      float v = 1.0;
+      for (int j = 1; j <= 128; j++) {
+        if (j > nt) break;
+        float t = float(j) / float(nt) * u_reach;
+        vec2 q = uv + d.xy * t * 0.5; float z = h0 + d.z * t + 0.002;
+        if (!INSIDE(q)) break;
+        if (HGT(q) > z) { v = 0.0; break; }
+      }
+      vis += v;
+    }
+    vis /= float(nl);
+    float sunDot = max(dot(n, vec3(cos(az) * cos(el), sin(az) * cos(el), sin(el))), 0.0);
+    direct = u_colorSun * u_sun * sunDot * vis;
+    vec3 lp = vec3(L1, u_l1h); vec3 ld = lp - vec3(p, h0); float ll = length(ld);
+    if (u_l1i > 0.0) {
+      float v = 1.0;
+      for (int j = 1; j <= 128; j++) {
+        if (j > nt) break;
+        vec3 q3 = vec3(p, h0) + ld * (float(j) / float(nt));
+        vec2 q = (q3.xy + 1.0) * 0.5;
+        if (!INSIDE(q)) break;
+        if (HGT(q) > q3.z + 0.002) { v = 0.0; break; }
+      }
+      direct += u_colorL1 * u_l1i * fl * falloff(ll, u_l1r) * max(dot(n, ld / max(ll, 1e-4)), 0.0) * v;
+    }
+    float occl = 0.0;
+    for (int i = 0; i < 256; i++) {
+      if (i >= ns) break;
+      float a = (float(i) + rnd(px, float(i))) / float(ns) * 2.0 * PI, e2 = asin(sqrt(rnd(px, float(i) + 500.0)));
+      vec3 d = vec3(cos(a) * cos(e2), sin(a) * cos(e2), sin(e2));
+      for (int j = 1; j <= 128; j++) {
+        if (j > nt / 2) break;
+        float t = float(j) / float(nt) * u_reach;
+        vec2 q = uv + d.xy * t * 0.5; float z = h0 + d.z * t + 0.002;
+        if (!INSIDE(q)) break;
+        if (HGT(q) > z) { occl += 1.0; break; }
+      }
+    }
+    sky = 1.0 - occl / float(ns);
+  }
+  vec3 light = u_colorAmbient * u_ambient * sky + direct + ind;
+  vec3 selfEmit = lumi(alb) * base.a >= u_emitThreshold ? alb * (u_emit * 0.35 + 0.65) : vec3(0.0);
+  vec3 lit = max(selfEmit, alb * light);
+  vec3 back = u_colorBackdrop * light * u_backdrop;
+  return vec4(lit * base.a + back * (1.0 - base.a), base.a + u_backdrop * (1.0 - base.a));
 }`,
     },
   };
@@ -648,8 +812,9 @@ void main() {
     if (u.b_below) {
       const below = ctx.below || new Float32Array(S * S * 4);
       // flip rows so texture v follows the y-down convention used by uv
-      const fl = new Float32Array(below.length), row = S * 4;
-      for (let y = 0; y < S; y++) fl.set(below.subarray(y * row, (y + 1) * row), y * row);
+      // quantised to 8 bits like an engine's offscreen render target, so threshold tests agree everywhere
+      const fl = new Float32Array(below.length);
+      for (let i = 0; i < below.length; i++) fl[i] = Math.round(Math.min(1, below[i]) * 255) / 255;
       bindTex('b_below', texFromRGBA('below' + S, fl, S, S, true));
     }
     for (const sp of def.params) {
@@ -679,5 +844,5 @@ void main() {
     FX.__gpuInstalled = true;
   }
   function available() { try { ctx3(8); return true; } catch (e) { return false; } }
-  return { TYPES, LIB, EASES, install, available, fragmentSource, render };
+  return { TYPES, LIB, SRC, EASES, install, available, fragmentSource, render };
 });

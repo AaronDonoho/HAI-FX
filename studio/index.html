@@ -287,6 +287,7 @@ input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 3px
 
 <script src="fxcore.js"></script>
 <script src="fxgpu.js"></script>
+<script src="fxexport.js"></script>
 <script>
 (function () {
 'use strict';
@@ -1010,7 +1011,7 @@ function tabHistory(body) {
         h('button', { class: 'btn small', onclick: e => { details.hidden = !details.hidden; e.currentTarget.textContent = details.hidden ? 'Show changes' : 'Hide changes'; } }, 'Show changes'),
         v.version !== S.baseVersion ? h('button', { class: 'btn small', onclick: () => { S.cur = FX.normalizeEffect(v.effect); edited(); toast(`Loaded v${v.version} as unsaved changes`); } }, 'Load into editor') : null)));
   });
-  body.append(h('div', { class: 'sec' }, h('button', { class: 'btn small', onclick: download }, 'Download sprite sheets (zip)')));
+  body.append(h('div', { class: 'sec row' }, h('button', { class: 'btn small', onclick: downloadEngines }, 'Download for Godot + Defold'), h('button', { class: 'btn small', onclick: download }, 'Sprite sheets only')));
 }
 
 // --------------------------------------------------- compare (variant grid)
@@ -1328,6 +1329,29 @@ function zip(files) { // store-only zip; files: [{name, data: Uint8Array}]
   const end = new DataView(new ArrayBuffer(22));
   end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true); end.setUint32(12, cdSize, true); end.setUint32(16, off, true);
   return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/zip' });
+}
+// Engine-ready export built in the page: live shaders for GPU layers, baked sheets for the rest.
+async function downloadEngines() {
+  if (!S.downloads) { toast('Downloads need the Claude app.'); return; }
+  toast('Building Godot and Defold files…');
+  const e = clean(S.cur), enc = new TextEncoder(), sources = {};
+  for (const it of S.sourceItems) {
+    const sid = it.sid || it.id, bin = atob(String(it.data).split(',')[1] || ''), u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    if (S.sources[sid]) sources[sid] = { w: S.sources[sid].w, h: S.sources[sid].h, pixel: S.sources[sid].pixel, png: u8 };
+  }
+  const png = async (w, hh, rgba) => {
+    const c = document.createElement('canvas'); c.width = w; c.height = hh;
+    c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(rgba), w, hh), 0, 0);
+    return new Uint8Array(await (await new Promise(r => c.toBlob(r, 'image/png'))).arrayBuffer());
+  };
+  try {
+    const { files, summary } = await FXExport.exportRuntime(e, { FX, GPU: FXGPU, sources, png, bake: async sub => FX.exportPasses(sub, { sources: S.sources }) });
+    const readme = `${e.name || EID} (v${S.baseVersion}${changes().length ? ' + edits' : ''})\n\nGodot: copy godot/ to res://fx/${e.id || EID}/ and instance ${e.id || EID}.tscn.\nDefold: copy defold/ to /fx/${e.id || EID}/ and add ${e.id || EID}.go to a collection.\n\nGodot layers: ${summary.godot.join(', ')}\nDefold layers: ${summary.defold.join(', ')}\n`;
+    const list = Object.entries(files).map(([name, data]) => ({ name, data: typeof data === 'string' ? enc.encode(data) : data }));
+    list.push({ name: 'README.txt', data: enc.encode(readme) }, { name: 'effect.json', data: enc.encode(JSON.stringify(e, null, 2)) });
+    await S.downloads.save({ filename: `${EID}_v${S.baseVersion}_engines.zip`, data: zip(list) });
+  } catch (err) { if (err.code !== 'declined') toast('Export failed: ' + (err.code || err.message)); }
 }
 async function download() {
   if (!S.downloads) { toast('Downloads need the Claude app. Claude can also export straight into the repo.'); return; }

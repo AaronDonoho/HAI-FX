@@ -52,11 +52,16 @@ re-arms the watch with ArtifactComments `watch` on the Studio URL.
 - **Renderer**: `core/fxcore.js` (CPU layers: glow, ring, sparks/debris, smoke, fire) plus
   `core/fxgpu.js` (GPU layers, WebGL2 GLSL: electric, waveform, water, clouds, gears, sprite
   [tint/flash/dissolve], outline [silhouette or contrast edges], shade [lighting from a sprite],
-  age [weathering], ripple and reflect [read everything below; blend `replace`]). The same files run
+  age [weathering], ripple and reflect [read everything below; blend `replace`], pathlight
+  [path-traced light: 2D scene with soft shadows, emissive pixels and one bounce, or 2.5D relief
+  with sun, sky occlusion and a point light]). The same files run
   in the Studio and, through `tools/engine.mjs` (headless Chromium), in every tool.
   Canvas flags `loop` and `tile` make GPU layers loop and tile exactly; `summary.loopJump` and
   `summary.tileSeam` measure it (≈1 is seamless). New layer types: add to `fxgpu.js` TYPES (params +
   `vec4 fx(vec2 uv)` returning premultiplied colour), then `node tools/templates.mjs`.
+- **Runtime export**: `core/fxexport.js` (shared by the Studio's "Download for Godot + Defold" and
+  `node tools/fx.mjs runtime`). GPU layers become live shaders (Godot `.gdshader` on Sprite2D, Defold
+  `.fp` + `.material` on sprites), CPU layers baked sheets, one script drives time for all.
 - **Effects and templates**: the Studio lists `effects/<id>` index docs and starts new effects from
   `studio/templates.json` (built from `fx/*/effect.json` and `fx/_sprites/*.png` by
   `node tools/templates.mjs`, which also renders every template with checks into `build/templates.png`).
@@ -97,6 +102,7 @@ penalty for moving away from the current values keep searches close to what the 
 node tools/fx.mjs render  fx/explosion/effect.json [--mode pixel] [--out exports/explosion]
 node tools/fx.mjs metrics fx/explosion/effect.json
 node tools/fx.mjs verify  fx/explosion/effect.json [--mode pixel] [--engines godot,defold]
+node tools/fx.mjs runtime fx/water/effect.json [--engines godot,defold] [--verify no]   # live shaders + engine check
 node tools/templates.mjs [--only water,gears]   # rebuild studio/templates.json + one review image of all templates
 bash tools/setup.sh        # installs Godot, Defold's bob.jar, Java 25 and libs in a fresh container
 ```
@@ -112,6 +118,18 @@ with the preview: `contentError` (mean abs error, 0-255) and `timingSlips`.
   drifts by one frame for a few frames at 30 fps (frame shown twice, later one skipped).
 - Defold `.particlefx`: omitted life curves default to **0**, so write every curve explicitly.
 - Defold particles can't be seeded: compare metrics, not pixels, for runtime particles.
+- Live shaders match the preview in both engines (mean error < 1/255) for every GPU layer type.
+  Rules that made that true; keep them for new layer types:
+  - Hash with integers (`h21` in fxgpu LIB). Float hashes like fract(sin(..)) drift between compilers.
+  - Wrap noise cells with `wrapc`, never `mod`: mod at exact multiples differs between drivers.
+  - Float literals in vector constructors (`vec2(1.0, 0.0)`) and `mat2(vec2, vec2)`: Godot is strict.
+  - Read the layers below only through `texture(b_below, …)` inside `fx()` or a macro used there.
+  - Defold: sprite textures have v = 0 at the bottom (export flips), and every material sampler must be
+    used by the shader or bindings shift (export keeps `texture_sampler` alive via `fx_frame.w`).
+  - Godot: below-reading layers sample a transparent SubViewport holding the layers under them; additive
+    shaders write rgb/sqrt(m), alpha sqrt(m) so light accumulates as coverage like the preview.
+  - Defold has no screen texture without a custom render script: below-reading layers (and everything
+    under them) are baked there.
 - Mixed blend modes are exported as separate passes (contiguous layers with the same blend),
   drawn in order; additive passes use Add blending. Pixel mode is one palette-locked alpha pass.
 

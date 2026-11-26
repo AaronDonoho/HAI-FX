@@ -55,7 +55,11 @@ parameters, metrics and checks.
   composite below, seamless loop/tile flags with seam metrics, multi-effect Studio with templates, and
   first generators: electricity, waveform, water, clouds, gears, sprite status effects, outline,
   lighting from sprites, weathering, ripple, reflection. Baked sprite-sheet export works for all of them.
-- Next: runtime shader export (Godot `.gdshader`, Defold `.fp`) with engine verification; path tracing.
+- Done: runtime shader export (Godot `.gdshader`, Defold `.fp`/`.material`) with frame-by-frame engine
+  verification for every GPU layer type; path-traced lighting (2D scene and 2.5D relief); engine-ready
+  download from the Studio.
+- Next candidates: Defold render-target support so below-reading layers run live there too; normal-map
+  and light-map export for engine lighting; more mechanisms (chains, belts, linkages).
 
 ## Proposed order
 1. GPU layer track + runtime shader export, proven end to end on one effect in both engines.
