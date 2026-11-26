@@ -20,8 +20,15 @@ Quick changes don't need a round: the Studio's **Ask Claude** box calls Claude f
 (`sample` capability, on the artist's usage), gets three patches, and shows them in Compare. The
 ask and the pick are logged as a note with `kind: "ask"` (status addressed) so rounds see them.
 
-If this session is gone, a new session reads this file, runs `bash tools/setup.sh`, and
-re-arms the watch with ArtifactComments `watch` on the Studio URL.
+If this session is gone, start a new one on the **HAI-FX** cloud environment (its setup script
+installs Godot, Defold's bob.jar, Java 25 and the tool dependencies before Claude starts), read this
+file, and re-arm the watch with ArtifactComments `watch` on the Studio URL. Outside that environment,
+`tools/fx.mjs` installs the engines into `.tools/` by itself the first time it needs them.
+
+Before authoring or changing effects, `node tools/fx.mjs catalog` prints every layer type and
+parameter (defaults, ranges, units) in ~6 KB. After changing the renderer or exporter, run
+`node tools/check.mjs` (all templates + every GPU layer live in both engines, ~2 min; `--fast` skips
+the engines). It catches regressions that single-effect checks miss.
 
 ## Where things live
 - **Studio** (the shared editor): https://claude.ai/artifact/WjGgnbNxE3E2dxoAgT7C7i
@@ -52,7 +59,7 @@ re-arms the watch with ArtifactComments `watch` on the Studio URL.
 - **Renderer**: `core/fxcore.js` (CPU layers: glow, ring, sparks/debris, smoke, fire) plus
   `core/fxgpu.js` (GPU layers, WebGL2 GLSL: electric, waveform, water, clouds, gears, sprite
   [tint/flash/dissolve], outline [silhouette or contrast edges], shade [lighting from a sprite],
-  age [weathering], ripple and reflect [read everything below; blend `replace`], pathlight
+  age [weathering], normals [normal map from a sprite], ripple and reflect [read everything below; blend `replace`], pathlight
   [path-traced light: 2D scene with soft shadows, emissive pixels and one bounce, or 2.5D relief
   with sun, sky occlusion and a point light]). The same files run
   in the Studio and, through `tools/engine.mjs` (headless Chromium), in every tool.
@@ -65,8 +72,15 @@ re-arms the watch with ArtifactComments `watch` on the Studio URL.
 - **Effects and templates**: the Studio lists `effects/<id>` index docs and starts new effects from
   `studio/templates.json` (built from `fx/*/effect.json` and `fx/_sprites/*.png` by
   `node tools/templates.mjs`, which also renders every template with checks into `build/templates.png`).
-- **Sprites**: items of kind `source` `{sid, name, data: PNG data URL ≤256 px}` in the effect's items;
-  layers reference them by `sid`. Tools get them from the same dump.
+- **Sprites**: items of kind `source` `{sid, name, data: PNG data URL ≤256 px, cols?, rows?, frames?}`
+  in the effect's items; layers reference them by `sid`. A sprite with cols/rows is an animated
+  sheet whose cell advances with the effect frame. Repo sprites live in `fx/_sprites/`, sheets
+  named `name@<cols>x<rows>[f<frames>].png`. Tools get sprites from the same dump.
+- **Exports** (`core/fxexport.js`, Studio download and `fx.mjs runtime`): `godot/`, `defold/` and
+  `generic/` (one sheet per blend pass + TexturePacker hash JSON + Aseprite JSON + README with draw
+  order and blend modes, for any other engine). `fx.mjs render` also writes a GIF preview.
+- **Budgets**: `summary.bakedKB` (uncompressed RGBA of the baked passes) and `summary.shaderCost`
+  (rough texture/noise lookups per pixel for live shaders; each GPU type has a `cost(params)`).
 
 ## A round in ~6 tool calls
 1. **Read everything**: ArtifactData `query`, collection `effects/<id>/items`, `limit` 1000,
@@ -103,6 +117,8 @@ node tools/fx.mjs render  fx/explosion/effect.json [--mode pixel] [--out exports
 node tools/fx.mjs metrics fx/explosion/effect.json
 node tools/fx.mjs verify  fx/explosion/effect.json [--mode pixel] [--engines godot,defold]
 node tools/fx.mjs runtime fx/water/effect.json [--engines godot,defold] [--verify no]   # live shaders + engine check
+node tools/fx.mjs catalog        # every layer type + params, compact
+node tools/check.mjs [--fast]     # self-check: templates + all GPU layers live in Godot and Defold
 node tools/templates.mjs [--only water,gears]   # rebuild studio/templates.json + one review image of all templates
 bash tools/setup.sh        # installs Godot, Defold's bob.jar, Java 25 and libs in a fresh container
 ```

@@ -41,7 +41,10 @@ function godotShader(effect, layer, srcInfo) {
   for (const sp of def.params) {
     const v = p[sp.key];
     if (sp.type === 'color') { const c = FX.hexToRgb(e.palette[v] !== undefined ? e.palette[v] : v); U.push(`uniform vec3 u_${sp.key} = vec3(${c.map(f1).join(', ')});`); }
-    else if (sp.type === 'source') { const si = srcInfo[v] || { w: 1, h: 1, pixel: true }; U.push(`uniform sampler2D s_${sp.key} : ${si.pixel ? 'filter_nearest' : 'filter_linear'}, repeat_disable;`, `uniform vec2 u_${sp.key}_size = vec2(${f1(si.w)}, ${f1(si.h)});`); }
+    else if (sp.type === 'source') {
+      const si = srcInfo[v] || { w: 1, h: 1, pixel: true }, g = si.grid || { cols: 1, rows: 1, frames: 1 };
+      U.push(`uniform sampler2D s_${sp.key} : ${si.pixel ? 'filter_nearest' : 'filter_linear'}, repeat_disable;`, `uniform vec2 u_${sp.key}_size = vec2(${f1(si.w / g.cols)}, ${f1(si.h / g.rows)});`, `uniform vec4 u_${sp.key}_grid = vec4(${f1(g.cols)}, ${f1(g.rows)}, ${f1(g.frames)}, 0.0);`);
+    }
     else if (sp.type === 'ease') U.push(`uniform float u_${sp.key} = ${f1(Math.max(0, GPU.EASES.indexOf(v)))};`);
     else U.push(`uniform float u_${sp.key} = ${f1(+v || 0)};`);
   }
@@ -122,7 +125,11 @@ function defoldFiles(effect, layer, projDir, srcInfo) {
   for (const sp of def.params) {
     const v = p[sp.key];
     if (sp.type === 'color') { const c = FX.hexToRgb(e.palette[v] !== undefined ? e.palette[v] : v); consts.push({ name: 'c_' + sp.key, v: [...c, 0] }); defines.push(`#define u_${sp.key} c_${sp.key}.xyz`); }
-    else if (sp.type === 'source') { const si = srcInfo[v] || { w: 1, h: 1 }; samplers.push('s_' + sp.key); defines.push(`#define u_${sp.key}_size vec2(${f1(si.w)}, ${f1(si.h)})`); }
+    else if (sp.type === 'source') {
+      const si = srcInfo[v] || { w: 1, h: 1 }, g = si.grid || { cols: 1, rows: 1, frames: 1 };
+      samplers.push('s_' + sp.key);
+      defines.push(`#define u_${sp.key}_size vec2(${f1(si.w / g.cols)}, ${f1(si.h / g.rows)})`, `#define u_${sp.key}_grid vec4(${f1(g.cols)}, ${f1(g.rows)}, ${f1(g.frames)}, 0.0)`);
+    }
     else { const n = sp.type === 'ease' ? Math.max(0, GPU.EASES.indexOf(v)) : +v || 0; consts.push({ name: 'c_' + sp.key, v: [n, 0, 0, 0] }); defines.push(`#define u_${sp.key} c_${sp.key}.x`); }
   }
   const srcs = def.params.filter(x => x.type === 'source').map(x => GPU.SRC(x.key, false, true)).join('\n'); // Defold textures: v = 0 at the bottom
@@ -238,6 +245,7 @@ async function exportRuntime(effect, io) {
     const extId = (type, p) => { let i = ext.findIndex(x => x[1] === p); if (i < 0) { ext.push([type, p]); i = ext.length - 1; } return i + 1; };
     subs.push(`[sub_resource type="Gradient" id="canvas_g"]\ncolors = PackedColorArray(1, 1, 1, 1, 1, 1, 1, 1)\n`, `[sub_resource type="GradientTexture2D" id="canvas"]\ngradient = SubResource("canvas_g")\nwidth = ${S}\nheight = ${S}\n`);
     let n = 0, vp = 0;
+    const vts = []; // ViewportTexture links, resolved once nesting is final
     const tree = []; // {name, parent, type, text} in draw order; parent '.' = scene root
     for (const nd of plan(e, 'godot')) {
       if (nd.kind === 'shader') {
@@ -259,7 +267,7 @@ async function exportRuntime(effect, io) {
             if (moved && t.canvas) t.text += `position = Vector2(${S / 2}, ${S / 2})\n`;
           }
           tree.push({ name: vpName, parent: '.', type: 'SubViewport', text: `transparent_bg = true\nsize = Vector2i(${S}, ${S})\nrender_target_update_mode = 4\n` });
-          subs.push(`[sub_resource type="ViewportTexture" id="vt${vp}"]\nresource_local_to_scene = true\nviewport_path = NodePath("${vpName}")\n`);
+          vts.push({ id: `vt${vp}`, name: vpName });
           params.push(`shader_parameter/b_below_tex = SubResource("vt${vp}")`);
           local = 'resource_local_to_scene = true\n';
         }
@@ -287,6 +295,12 @@ async function exportRuntime(effect, io) {
         }
       }
     }
+    // a SubViewport may have been wrapped by later ones: link textures to its final path
+    // (defined right after the canvas texture: Godot needs sub-resources before anything references them)
+    subs.splice(2, 0, ...vts.map(v => {
+      const t = tree.find(x => x.name === v.name);
+      return `[sub_resource type="ViewportTexture" id="${v.id}"]\nresource_local_to_scene = true\nviewport_path = NodePath("${t.parent === '.' ? '' : t.parent + '/'}${v.name}")\n`;
+    }));
     // write parents before their children
     const ordered = [];
     const visit = p => { for (const t of tree.filter(x => x.parent === p)) { ordered.push(t); if (t.type === 'SubViewport') visit(p === '.' ? t.name : `${p}/${t.name}`); } };
@@ -350,6 +364,22 @@ end
     comps.unshift(`components {\n  id: "fx_runtime"\n  component: "${proj}/fx_runtime.script"\n}\n`);
     put(`${dir}/${`${id}.go`}`, comps.join(''));
     summary.defold = plan(e, 'defold').map(nd => (nd.kind === 'shader' ? `live:${nd.layer.id}` : `baked:${nd.layers.join('+')}${nd.why ? ' (' + nd.why + ')' : ''}`));
+  }
+  // ---- Generic: sprite sheets with TexturePacker (hash) and Aseprite JSON, for any engine
+  {
+    const all = JSON.parse(JSON.stringify(e)); delete all.__norm;
+    const ex = await io.bake(all), ms = Math.round(1000 / e.canvas.fps), notes = [];
+    for (const pass of ex.passes) {
+      const sh = sheet(pass.frames, S), base = `${id}_${pass.name}`, png = `${base}.png`;
+      put(`generic/${png}`, await io.png(sh.W, sh.H, sh.data));
+      const fr = pass.frames.map((_, f) => ({ filename: `${base}_${String(f).padStart(3, '0')}`, frame: { x: (f % sh.cols) * S, y: Math.floor(f / sh.cols) * S, w: S, h: S }, rotated: false, trimmed: false, spriteSourceSize: { x: 0, y: 0, w: S, h: S }, sourceSize: { w: S, h: S }, duration: ms }));
+      const meta = { app: 'hai-fx', image: png, format: 'RGBA8888', size: { w: sh.W, h: sh.H }, scale: '1', blend: pass.blend, fps: e.canvas.fps, loop: !!e.canvas.loop };
+      put(`generic/${base}.json`, JSON.stringify({ frames: Object.fromEntries(fr.map(x => [x.filename, { frame: x.frame, rotated: false, trimmed: false, spriteSourceSize: x.spriteSourceSize, sourceSize: x.sourceSize, duration: ms }])), meta }, null, 2));
+      put(`generic/${base}.aseprite.json`, JSON.stringify({ frames: fr, meta: Object.assign({}, meta, { frameTags: [{ name: id, from: 0, to: fr.length - 1, direction: 'forward' }] }) }, null, 2));
+      notes.push(`${png}: ${pass.blend === 'add' ? 'draw with ADDITIVE blending' : 'draw with normal alpha blending (straight alpha)'}`);
+    }
+    put('generic/README.txt', `${e.name || id}: ${ex.frameCount} frames at ${e.canvas.fps} fps, ${S}x${S} px, ${e.canvas.loop ? 'looping' : 'plays once'}.\nDraw the sheets in this order, each at the same position:\n${notes.join('\n')}\nEach sheet comes with TexturePacker (hash) JSON and Aseprite JSON describing its frames.\n`);
+    summary.generic = ex.passes.map(p => `${p.name} (${p.blend})`);
   }
   return { files, summary };
 }

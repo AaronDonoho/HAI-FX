@@ -90,6 +90,9 @@ vec2 srcUV_${name}(vec2 uv, float scale, vec2 off, float rotDeg) {
 }
 vec4 src_${name}(vec2 st) {
   if (st.x < 0.0 || st.y < 0.0 || st.x > 1.0 || st.y > 1.0) return vec4(0.0);
+  vec3 g = max(u_${name}_grid.xyz, vec3(1.0));
+  float idx = floor(u_frame + 0.5); idx = idx - g.z * floor((idx + 0.5) / g.z);
+  st = (vec2(idx - g.x * floor((idx + 0.5) / g.x), floor((idx + 0.5) / g.x)) + clamp(st, 0.001, 0.999)) / g.xy;
   vec4 c = texture(s_${name}, ${flipV ? 'vec2(st.x, 1.0 - st.y)' : 'st'});
   return ${premulInShader ? 'vec4(c.rgb * c.a, c.a)' : 'c'};
 }
@@ -105,6 +108,7 @@ vec4 src_${name}(vec2 st) {
   const TYPES = {
     electric: {
       label: 'Electricity', blend: 'add',
+      cost: p => 6 * (1 + (p.branches || 0)) * 2,
       params: [
         P('start', 'Start', 'frame', 0, { min: 0, max: 120, group: T }), P('duration', 'Duration', 'frame', 24, { min: 1, max: 240, group: T }),
         P('hold', 'Reshape every', 'frame', 2, { min: 1, max: 30, group: T }), P('fadeEase', 'Fade curve', 'ease', 'inQuad', { group: T }),
@@ -157,6 +161,7 @@ vec4 fx(vec2 uv) {
 
     waveform: {
       label: 'Waveform', blend: 'add',
+      cost: p => 8 * (1 + (p.trail || 0)) + ((p.mode || 0) == 2 ? 24 : 0),
       params: [
         P('mode', 'Shape', 'choice', 0, { options: ['Harmonics', 'Heartbeat', 'Signal noise', 'Square', 'Sawtooth'], group: SH }),
         P('amp', 'Amplitude', 'num', 0.35, { min: 0, max: 1, step: 0.01, unit: 'u', group: SH }), P('freq', 'Cycles across', 'num', 2, { min: 0.25, max: 12, step: 0.25, group: SH }),
@@ -198,6 +203,7 @@ vec4 fx(vec2 uv) {
 
     water: {
       label: 'Water', blend: 'normal',
+      cost: p => 3 * (5 + 4) * 4 + 12,
       params: [
         P('scale', 'Wave scale', 'num', 4, { min: 1, max: 16, step: 1, help: 'Noise cells across the frame (whole numbers tile).', group: SH }),
         P('flow', 'Flow', 'num', 1, { min: 0, max: 4, step: 1, help: 'Whole tiles moved per loop.', group: MO }),
@@ -230,6 +236,7 @@ vec4 fx(vec2 uv) {
 
     clouds: {
       label: 'Clouds', blend: 'normal',
+      cost: p => 2 * (p.detail || 5) * 4,
       params: [
         P('scale', 'Scale', 'num', 3, { min: 1, max: 12, step: 1, help: 'Cells across the frame (whole numbers tile).', group: SH }),
         P('coverage', 'Coverage', 'num', 0.5, { min: 0, max: 1, step: 0.01, group: SH }), P('softness', 'Softness', 'num', 0.25, { min: 0.01, max: 1, step: 0.01, group: SH }),
@@ -258,6 +265,7 @@ vec4 fx(vec2 uv) {
 
     gears: {
       label: 'Gears', blend: 'normal',
+      cost: p => 7 * ((p.teethC || 0) >= 6 ? 3 : 2) + 12,
       params: [
         P('teethA', 'Teeth A', 'int', 16, { min: 6, max: 60, group: SH }), P('teethB', 'Teeth B', 'int', 10, { min: 6, max: 60, group: SH }),
         P('teethC', 'Teeth C', 'int', 0, { min: 0, max: 60, help: '0 = no third gear.', group: SH }),
@@ -331,6 +339,7 @@ vec4 fx(vec2 uv) {
 
     sprite: {
       label: 'Sprite', blend: 'normal',
+      cost: p => 2 + ((p.dissolveTo || 0) + (p.dissolveFrom || 0) > 0 ? 16 : 0),
       params: SPRITE.concat([
         P('start', 'Start', 'frame', 0, { min: 0, max: 240, group: T }), P('duration', 'Duration', 'frame', 24, { min: 1, max: 240, group: T }),
         P('tint', 'Tint', 'num', 0, { min: 0, max: 1, step: 0.01, group: LK }), P('colorTint', 'Tint colour', 'color', 'white', { group: LK }),
@@ -366,6 +375,7 @@ vec4 fx(vec2 uv) {
 
     outline: {
       label: 'Outline', blend: 'normal',
+      cost: p => ((p.mode || 0) == 2 ? 12 * 6 + 8 : 48),
       params: SPRITE.concat([
         P('mode', 'Edges of', 'choice', 0, { options: ['Silhouette (outside)', 'Silhouette (inside)', 'Areas of contrast'], group: SH }),
         P('width', 'Width', 'num', 2, { min: 0.5, max: 12, step: 0.5, unit: 'px', group: SH }), P('threshold', 'Contrast threshold', 'num', 0.25, { min: 0.01, max: 1, step: 0.01, group: SH }),
@@ -412,6 +422,7 @@ vec4 fx(vec2 uv) {
 
     shade: {
       label: 'Lighting', blend: 'normal',
+      cost: p => 5 * 25 + 5,
       params: SPRITE.concat([
         P('lightAngle', 'Light angle', 'angle', -135, { min: -180, max: 180, step: 1, unit: '°', group: LK }), P('elevation', 'Light height', 'num', 0.5, { min: 0.05, max: 1, step: 0.01, group: LK }),
         P('depth', 'Surface depth', 'num', 1.5, { min: 0, max: 6, step: 0.05, group: LK }), P('roundness', 'Roundness', 'num', 3, { min: 0.5, max: 16, step: 0.5, unit: 'px', group: LK }),
@@ -448,6 +459,7 @@ vec4 fx(vec2 uv) {
 
     age: {
       label: 'Weathering', blend: 'normal',
+      cost: p => 13 + 3 * 4 * 4 + 2 * 36,
       params: SPRITE.concat([
         P('rust', 'Rust', 'num', 0.4, { min: 0, max: 1, step: 0.01, group: LK }), P('grime', 'Grime', 'num', 0.5, { min: 0, max: 1, step: 0.01, group: LK }),
         P('chips', 'Chipped edges', 'num', 0.3, { min: 0, max: 1, step: 0.01, group: LK }), P('cracks', 'Cracks', 'num', 0.2, { min: 0, max: 1, step: 0.01, group: LK }),
@@ -485,8 +497,35 @@ vec4 fx(vec2 uv) {
 }`,
     },
 
+    normals: {
+      label: 'Normal map', blend: 'normal',
+      params: SPRITE.concat([
+        P('depth', 'Surface depth', 'num', 1.5, { min: 0, max: 6, step: 0.05, group: LK }), P('roundness', 'Roundness', 'num', 3, { min: 0.5, max: 16, step: 0.5, unit: 'px', group: LK }),
+        P('detail', 'Detail relief', 'num', 0.5, { min: 0, max: 2, step: 0.01, help: 'How much colour brightness reads as surface bumps.', group: LK }),
+        P('flipY', 'Green channel', 'choice', 0, { options: ['Y up (OpenGL, Godot)', 'Y down (DirectX)'], group: LK }),
+      ]),
+      cost: p => 55,
+      glsl: `
+float HT(vec2 st, vec2 o) {
+  float a = 0.0, w = 0.0;
+  for (int i = -2; i <= 2; i++) for (int j = -2; j <= 2; j++) { float k = exp(-float(i * i + j * j) * 0.35); a += src_source(st + vec2(float(i), float(j)) * o * u_roundness * 0.5).a * k; w += k; }
+  vec4 c = src_source(st);
+  return a / w + (c.a > 0.0 ? lumi(c.rgb / c.a) : 0.0) * u_detail * 0.25;
+}
+vec4 fx(vec2 uv) {
+  vec2 st = ${SAMPLE};
+  vec4 c = src_source(st);
+  if (c.a <= 0.0) return vec4(0.0);
+  vec2 o = vec2(1.0 / u_size) / max(u_scale, 1e-3);
+  float hx = HT(st + vec2(o.x, 0.0), o) - HT(st - vec2(o.x, 0.0), o), hy = HT(st + vec2(0.0, o.y), o) - HT(st - vec2(0.0, o.y), o);
+  vec3 n = normalize(vec3(-hx * u_depth * 4.0, (u_flipY > 0.5 ? -1.0 : 1.0) * hy * u_depth * 4.0, 1.0));
+  return vec4((n * 0.5 + 0.5) * c.a, c.a);
+}`,
+    },
+
     ripple: {
       label: 'Ripple', blend: 'replace', readsBelow: true,
+      cost: p => 2,
       params: [
         P('start', 'Start', 'frame', 0, { min: 0, max: 120, group: T }), P('duration', 'Duration', 'frame', 24, { min: 1, max: 240, group: T }),
         P('cx', 'Centre X', 'num', 0, { min: -1, max: 1, step: 0.01, unit: 'u', group: SH }), P('cy', 'Centre Y', 'num', 0, { min: -1, max: 1, step: 0.01, unit: 'u', group: SH }),
@@ -515,6 +554,7 @@ vec4 fx(vec2 uv) {
 
     reflect: {
       label: 'Reflection', blend: 'replace', readsBelow: true,
+      cost: p => 6,
       params: [
         P('horizon', 'Surface Y', 'num', 0.35, { min: -1, max: 1, step: 0.01, unit: 'u', group: SH }), P('fade', 'Fade length', 'num', 0.6, { min: 0.05, max: 2, step: 0.01, unit: 'u', group: SH }),
         P('opacity', 'Opacity', 'num', 0.55, { min: 0, max: 1, step: 0.01, group: LK }), P('wobble', 'Wobble', 'num', 2, { min: 0, max: 12, step: 0.25, unit: 'px', group: LK }),
@@ -541,6 +581,7 @@ vec4 fx(vec2 uv) {
     },
     pathlight: {
       label: 'Path-traced light', blend: 'replace', readsBelow: true,
+      cost: p => ((p.mode || 0) > 0.5 ? 5 : 1) * ((p.samples || 48) * (p.steps || 40) + 2 * Math.max(1, (p.samples || 48) / 6) * (p.steps || 40)),
       params: [
         P('mode', 'Mode', 'choice', 0, { options: ['Scene (2D)', 'Relief (2.5D)'], group: SH }),
         P('samples', 'Rays per pixel', 'int', 48, { min: 4, max: 256, help: 'More rays = smoother light and shadows, slower render.', group: SH }),
@@ -713,7 +754,7 @@ vec4 fx(vec2 uv) {
     const out = [];
     for (const p of def.params) {
       if (p.type === 'color') out.push(`uniform vec3 u_${p.key};`);
-      else if (p.type === 'source') out.push(`uniform sampler2D s_${p.key};`, `uniform vec2 u_${p.key}_size;`);
+      else if (p.type === 'source') out.push(`uniform sampler2D s_${p.key};`, `uniform vec2 u_${p.key}_size;`, `uniform vec4 u_${p.key}_grid;`);
       else out.push(`uniform float u_${p.key};`);
     }
     return out.join('\n');
@@ -824,7 +865,9 @@ void main() {
         const src = ctx.sources && ctx.sources[v];
         const tex = sourceTexture(src, v) || texFromRGBA('empty', new Uint8Array(4), 1, 1, false);
         bindTex('s_' + sp.key, tex);
-        if (u['u_' + sp.key + '_size']) g.uniform2f(u['u_' + sp.key + '_size'], src ? src.w : 1, src ? src.h : 1);
+        const gr = (src && src.grid) || { cols: 1, rows: 1, frames: 1 };
+        if (u['u_' + sp.key + '_size']) g.uniform2f(u['u_' + sp.key + '_size'], src ? src.w / gr.cols : 1, src ? src.h / gr.rows : 1);
+        if (u['u_' + sp.key + '_grid']) g.uniform4f(u['u_' + sp.key + '_grid'], gr.cols, gr.rows, gr.frames, 0);
       } else if (sp.type === 'ease') set1('u_' + sp.key, Math.max(0, EASES.indexOf(v)));
       else set1('u_' + sp.key, +v || 0);
     }

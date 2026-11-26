@@ -794,6 +794,9 @@
       layers: {},
     });
     for (const [id, P] of Object.entries(per)) summary.layers[id] = seriesSummary(P.energy, P.radius, P.coverage);
+    // budgets: baked sheets in memory (uncompressed RGBA) and live-shader work per pixel
+    summary.bakedKB = Math.round((passGroups(effect).length * F * size * size * 4) / 1024);
+    summary.shaderCost = effect.layers.reduce((s, l) => s + (l.enabled && TYPES[l.type] && TYPES[l.type].cost ? Math.round(TYPES[l.type].cost(l.params)) : 0), 0);
     const mad = (a, b) => { let s = 0; for (let i = 0; i < a.length; i += 4) s += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]); return s / (a.length * 0.75); };
     if (effect.canvas.loop && keep.length > 2) {
       // jump from the last frame back to the first, relative to a typical frame-to-frame step (1 = seamless)
@@ -949,6 +952,24 @@
     return Object.assign(aspects, { overall: +(s / n).toFixed(3) });
   }
 
+  // ------------------------------------------------------------- catalog
+  // One line per layer type: what it is, how it blends, and every parameter with its default and range.
+  function catalog(only) {
+    const lines = [];
+    for (const [name, T] of Object.entries(TYPES)) {
+      if (only && !only.includes(name)) continue;
+      const ps = T.params.map(p => {
+        if (p.type === 'color') return `${p.key}=@${p.def}`;
+        if (p.type === 'ease') return `${p.key}=${p.def}~ease`;
+        if (p.type === 'choice') return `${p.key}=${p.def}{${(p.options || []).map((o, i) => i + ':' + o).join('|')}}`;
+        if (p.type === 'source') return `${p.key}=sprite`;
+        return `${p.key}=${p.def}[${p.min}..${p.max}${p.unit ? ' ' + p.unit : ''}]`;
+      });
+      lines.push(`${name} (${T.engine === 'gpu' ? 'gpu' : 'cpu'}, ${T.blend}${T.readsBelow ? ', reads below' : ''}): ${ps.join(' ')}`);
+    }
+    return lines.join('\n');
+  }
+
   // --------------------------------------------------------- diff + patch
   // Human-readable list of what changed between two effect documents.
   function diff(aIn, bIn) {
@@ -989,7 +1010,7 @@
   }
 
   return {
-    EASE, TYPES, ease, paramSpec, normalizeEffect, registerType, evaluate, renderLayers, renderFrame, flatten, exportPasses, passGroups, renderPassFrame,
+    EASE, TYPES, ease, paramSpec, normalizeEffect, registerType, evaluate, catalog, renderLayers, renderFrame, flatten, exportPasses, passGroups, renderPassFrame,
     attribute, measure, evaluateChecks, metricValue, describeImage, compareDescriptors, diff, applyPatch, hexToRgb, rgbToHex, lum,
   };
 });

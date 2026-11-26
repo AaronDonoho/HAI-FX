@@ -18,12 +18,14 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HELPER = `
 window.__src = {};
 window.__setSources = async (map) => {
-  for (const [id, url] of Object.entries(map || {})) {
+  for (const [id, v] of Object.entries(map || {})) {
+    const url = typeof v === 'string' ? v : (v.url || v.data);
     const bmp = await createImageBitmap(await (await fetch(url)).blob());
     const c = new OffscreenCanvas(bmp.width, bmp.height), g = c.getContext('2d');
     g.drawImage(bmp, 0, 0);
     const d = g.getImageData(0, 0, bmp.width, bmp.height);
-    window.__src[id] = { data: d.data, w: d.width, h: d.height, pixel: Math.max(d.width, d.height) <= 128 };
+    const grid = typeof v === 'object' && v.cols ? { cols: v.cols, rows: v.rows || 1, frames: v.frames || v.cols * (v.rows || 1) } : null;
+    window.__src[id] = { data: d.data, w: d.width, h: d.height, pixel: Math.max(d.width / ((grid && grid.cols) || 1), d.height / ((grid && grid.rows) || 1)) <= 128, grid };
   }
   return Object.keys(window.__src);
 };
@@ -100,11 +102,20 @@ export async function openEngine({ pages = 1 } = {}) {
 }
 
 // Sprite sources stored beside an effect file: fx/<id>/sources/<name>.png -> {name: dataURL}
-// plus the shared library in fx/_sprites/<name>.png
-export function sourcesBeside(effectFile) {
+// plus the shared library in fx/_sprites/<name>.png. Animated sheets: <name>@<cols>x<rows>[f<frames>].png
+export function sourcesInDir(dir) {
   const out = {};
-  for (const dir of [path.join(ROOT, 'fx', '_sprites'), path.join(path.dirname(effectFile), 'sources')]) {
-    if (fs.existsSync(dir)) for (const f of fs.readdirSync(dir)) if (/\.png$/i.test(f)) out[f.replace(/\.png$/i, '')] = 'data:image/png;base64,' + fs.readFileSync(path.join(dir, f)).toString('base64');
+  if (!fs.existsSync(dir)) return out;
+  for (const f of fs.readdirSync(dir)) {
+    const m = /^(.+?)(?:@(\d+)x(\d+)(?:f(\d+))?)?\.png$/i.exec(f);
+    if (!m) continue;
+    const url = 'data:image/png;base64,' + fs.readFileSync(path.join(dir, f)).toString('base64');
+    out[m[1]] = m[2] ? { url, cols: +m[2], rows: +m[3], frames: m[4] ? +m[4] : +m[2] * +m[3] } : url;
   }
   return out;
 }
+export function sourcesBeside(effectFile) {
+  return Object.assign(sourcesInDir(path.join(ROOT, 'fx', '_sprites')), sourcesInDir(path.join(path.dirname(effectFile), 'sources')));
+}
+export const sourceFileName = (id, v) => (typeof v === 'object' && v.cols ? `${id}@${v.cols}x${v.rows || 1}f${v.frames || v.cols * (v.rows || 1)}.png` : `${id}.png`);
+export const sourceUrl = v => (typeof v === 'string' ? v : v.url || v.data);

@@ -1,0 +1,57 @@
+{
+  "id": "animated-sprite",
+  "name": "Animated sprite: outline + light",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 48,
+    "fps": 12,
+    "frames": 16,
+    "mode": "smooth",
+    "dither": true,
+    "alphaCut": 0.5,
+    "loop": true,
+    "tile": false
+  },
+  "palette": {
+    "white": "#ffffff",
+    "hot": "#ffd35c",
+    "ambient": "#5a6a8a",
+    "ink": "#1a1420"
+  },
+  "layers": [
+    {
+      "id": "slime",
+      "type": "shade",
+      "label": "Slime",
+      "params": {
+        "source": "slime",
+        "scale": 0.7,
+        "orbit": 1,
+        "specular": 0.6,
+        "ambient": 0.55
+      }
+    },
+    {
+      "id": "outline",
+      "type": "outline",
+      "label": "Outline",
+      "params": {
+        "source": "slime",
+        "scale": 0.7,
+        "width": 2,
+        "colorLine": "hot",
+        "pulse": 0.5
+      }
+    }
+  ],
+  "checks": [
+    {
+      "id": "loop",
+      "label": "Loops seamlessly",
+      "metric": "loopJump",
+      "op": "<=",
+      "value": 1.5
+    }
+  ]
+}

@@ -8,3 +8,4 @@ engine_tests/dfo_*/
 engine_tests/*.png
 build/
 tools/node_modules/
+.tools/

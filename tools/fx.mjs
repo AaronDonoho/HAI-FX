@@ -15,19 +15,27 @@ import { execSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import pngjs from 'pngjs';
-import { openEngine, sourcesBeside } from './engine.mjs';
+import { openEngine, sourcesBeside, sourcesInDir } from './engine.mjs';
 import { exportRuntime } from './runtime.mjs';
 
 const { PNG } = pngjs;
 const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FX = require(path.join(ROOT, 'core/fxcore.js'));
+require(path.join(ROOT, 'core/fxgpu.js')).install(FX);
 
+// Engines live in <repo>/.tools (installed by tools/setup.sh, which runs automatically if they are missing).
+const pick = (...c) => c.find(p => p && fs.existsSync(p)) || c[0];
 const TOOLS = {
-  godot: process.env.GODOT || '/home/user/tools/godot',
-  bob: process.env.BOB || '/home/user/tools/bob.jar',
+  godot: pick(process.env.GODOT, path.join(ROOT, '.tools/godot'), '/home/user/tools/godot'),
+  bob: pick(process.env.BOB, path.join(ROOT, '.tools/bob.jar'), '/home/user/tools/bob.jar'),
   java: process.env.JAVA25 || '/usr/lib/jvm/java-25-openjdk-amd64/bin/java',
 };
+function ensureEngines() {
+  if (fs.existsSync(TOOLS.godot) && fs.existsSync(TOOLS.bob) && fs.existsSync(TOOLS.java)) return;
+  execSync(`bash ${path.join(ROOT, 'tools/setup.sh')}`, { stdio: 'inherit' });
+  TOOLS.godot = path.join(ROOT, '.tools/godot'); TOOLS.bob = path.join(ROOT, '.tools/bob.jar');
+}
 
 // ------------------------------------------------------------------ helpers
 function args() {
@@ -92,6 +100,13 @@ async function render(effect, outDir) {
   const ps = packSheet(prev, S);
   writePng(path.join(outDir, `${id}_review.png`), ps.W, ps.H, ps.data);
 
+  // shareable GIF preview over the Studio background
+  try {
+    const gdir = path.join(outDir, '_gif'); fs.rmSync(gdir, { recursive: true, force: true }); fs.mkdirSync(gdir, { recursive: true });
+    prev.forEach((img, f) => writePng(path.join(gdir, `f_${String(f).padStart(3, '0')}.png`), S, S, img));
+    sh(`ffmpeg -loglevel error -y -framerate ${e.canvas.fps} -i ${gdir}/f_%03d.png -vf "scale=${S * 2}:${S * 2}:flags=neighbor,split[a][b];[a]palettegen=reserve_transparent=0[p];[b][p]paletteuse=dither=bayer:bayer_scale=3" ${e.canvas.loop ? '-loop 0' : '-loop -1'} ${path.join(outDir, `${id}_preview.gif`)}`);
+    fs.rmSync(gdir, { recursive: true, force: true });
+  } catch (err) { /* ffmpeg missing: skip the GIF */ }
   const metrics = await E.call('measure', e);
   fs.writeFileSync(path.join(outDir, `${id}.metrics.json`), JSON.stringify(metrics, null, 2));
 
@@ -218,6 +233,7 @@ on every pass (same frame) to replay in sync.${pixel ? '\nPixel mode: set graphi
 
 // ------------------------------------------------------------------- verify
 function verifyGodot(e, outDir, work) {
+  ensureEngines();
   const id = e.id || 'effect', S = e.canvas.mode === 'pixel' ? e.canvas.pixelSize : e.canvas.size;
   const V = Math.max(S, 128); // Godot enforces a minimum window size; render larger and crop the centre.
   fs.rmSync(work, { recursive: true, force: true });
@@ -272,6 +288,7 @@ position = Vector2(${V / 2}, ${V / 2})
 }
 
 function verifyDefold(e, outDir, work) {
+  ensureEngines();
   const id = e.id || 'effect', S = e.canvas.mode === 'pixel' ? e.canvas.pixelSize : e.canvas.size;
   fs.rmSync(work, { recursive: true, force: true });
   fs.mkdirSync(path.join(work, 'fx', id), { recursive: true });
@@ -408,6 +425,7 @@ async function verify(effect, opts) {
 
 // --------------------------------------------------------------------- main
 const { cmd, file, opts } = args();
+if (cmd === 'catalog') { console.log(FX.catalog()); process.exit(0); }
 if (!cmd || !file) {
   console.log('usage: fx.mjs render|verify|metrics <effect.json> [--mode pixel|smooth] [--out dir] [--engines godot,defold]');
   process.exit(1);
@@ -416,7 +434,7 @@ const effect = loadEffect(file, opts);
 (async () => {
   E = await openEngine({ pages: 1 });
   const srcs = sourcesBeside(file);
-  if (opts.sources) for (const f of fs.readdirSync(opts.sources)) if (/\.png$/i.test(f)) srcs[f.replace(/\.png$/i, '')] = 'data:image/png;base64,' + fs.readFileSync(path.join(opts.sources, f)).toString('base64');
+  if (opts.sources) Object.assign(srcs, sourcesInDir(opts.sources));
   await E.setSources(srcs);
   if (cmd === 'render') {
     const e = FX.normalizeEffect(effect);
@@ -424,6 +442,8 @@ const effect = loadEffect(file, opts);
     const t0 = Date.now();
     const { atlas, metrics } = await render(effect, out);
     console.log(JSON.stringify({ out, ms: Date.now() - t0, passes: atlas.passes.map(p => p.image), summary: metrics.summary, checks: metrics.checks.map(c => `${c.pass ? 'PASS' : 'FAIL'} ${c.label} (${c.actual})`) }, null, 2));
+  } else if (cmd === 'catalog') {
+    console.log(FX.catalog());
   } else if (cmd === 'metrics') {
     console.log(JSON.stringify(await E.call('measure', effect), null, 2));
   } else if (cmd === 'verify') {

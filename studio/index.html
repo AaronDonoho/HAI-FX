@@ -892,7 +892,10 @@ function tabRefs(body) {
   const sin = h('input', { type: 'file', accept: 'image/png,image/gif,image/webp,image/jpeg', multiple: true, hidden: true, onchange: e => addSprites([...e.target.files]) });
   if (S.db) sec.firstChild.append(sin, h('button', { class: 'btn small', onclick: () => sin.click() }, 'Add sprites'));
   const sg = h('div', { class: 'srcs' });
+  const gridIn = (it, k, label) => h('input', { class: 'num', type: 'number', min: 1, max: 64, value: it[k] || (k === 'frames' ? (it.cols || 1) * (it.rows || 1) : 1), title: label, 'aria-label': label, style: 'width:38px',
+    onchange: e => { const v = Math.max(1, Math.round(+e.target.value || 1)), upd = { [k]: v, t: now() }; if (k !== 'frames') upd.frames = (k === 'cols' ? v : it.cols || 1) * (k === 'rows' ? v : it.rows || 1); item(it.id).update(upd); } });
   for (const it of S.sourceItems) sg.append(h('div', { class: 'src' }, h('img', { src: it.data, alt: it.name || it.sid }), h('span', { text: it.name || it.sid }),
+    S.db ? h('div', { class: 'row', title: 'Sprite sheet: columns × rows, frames used' }, gridIn(it, 'cols', 'Columns'), '×', gridIn(it, 'rows', 'Rows'), gridIn(it, 'frames', 'Frames')) : null,
     S.db ? h('button', { class: 'btn small ghost danger', onclick: () => item(it.id).delete() }, 'Remove') : null));
   if (!S.sourceItems.length) sg.append(h('span', { class: 'muted', text: 'None yet' }));
   body.append(sec, sg, h('div', { class: 'sec' }, h('h3', { text: 'References' })));
@@ -938,13 +941,15 @@ async function decodeSources(items, into) {
   const next = {};
   for (const it of items) {
     const sid = it.sid || it.id;
-    if (S.sources[sid] && S.sources[sid].url === it.data) { next[sid] = S.sources[sid]; continue; }
+    const cols = Math.max(1, +it.cols || 1), rows = Math.max(1, +it.rows || 1);
+    const grid = cols > 1 || rows > 1 ? { cols, rows, frames: Math.max(1, +it.frames || cols * rows) } : null, key = it.data + JSON.stringify(grid);
+    if (S.sources[sid] && S.sources[sid].key === key) { next[sid] = S.sources[sid]; continue; }
     try {
       const bmp = await createImageBitmap(await (await fetch(it.data)).blob());
       const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
       const g = c.getContext('2d'); g.drawImage(bmp, 0, 0);
       const d = g.getImageData(0, 0, bmp.width, bmp.height);
-      next[sid] = { data: d.data, w: d.width, h: d.height, pixel: Math.max(d.width, d.height) <= 128, name: it.name || sid, url: it.data };
+      next[sid] = { data: d.data, w: d.width, h: d.height, pixel: Math.max(d.width / cols, d.height / rows) <= 128, name: it.name || sid, url: it.data, grid, key };
     } catch (e) {}
   }
   if (into) return next;
@@ -991,6 +996,8 @@ function tabMeasure(body) {
   add('Peak frame', m.summary.peakFrame); add('Fades out by', 'f' + m.summary.fadeFrame);
   add('Max coverage', Math.round(m.summary.maxCoverage * 100) + '%'); add('Max overdraw', m.summary.maxOverdraw.toFixed(1) + '×');
   if (S.cur.canvas.mode === 'pixel') add('Stray pixels', m.summary.orphanPixels);
+  if (m.summary.bakedKB !== undefined) add('Baked size', m.summary.bakedKB + ' KB');
+  if (m.summary.shaderCost) add('Live shader cost', m.summary.shaderCost + ' / px');
   sec.append(facts, h('h3', { text: 'Checks' }));
   for (const c of m.checks) sec.append(h('div', { class: 'check' }, h('span', { class: 'dot ' + (c.pass ? 'ok' : 'bad') }), h('span', { text: c.label }), h('span', { class: 'mono', text: String(c.actual) })));
   body.append(sec);
@@ -998,20 +1005,26 @@ function tabMeasure(body) {
 
 // ---------------------------------------------------------- History tab
 function tabHistory(body) {
+  S.cmpSel = S.cmpSel || new Set();
+  if (S.versions.length > 1) {
+    const btn = h('button', { class: 'btn small', disabled: S.cmpSel.size < 2, onclick: () => openCompare({ title: 'Saved versions', question: '',
+      options: S.versions.filter(v => S.cmpSel.has(v.version)).map(v => ({ key: 'v' + v.version, label: v.message || ago(v.savedAt), effect: FX.normalizeEffect(v.effect) })) }) }, `Compare selected (${S.cmpSel.size})`);
+    body.append(h('div', { class: 'sec row' }, btn));
+  }
   if (!S.versions.length) { body.append(h('div', { class: 'empty' }, S.db ? 'No saved versions yet.' : 'Version history needs the Claude app.')); return; }
   S.versions.forEach((v, i) => {
     const prev = S.versions[i + 1];
     const d = prev ? FX.diff(prev.effect, v.effect) : (v.changes || []);
     const details = h('ul', { class: 'diff', hidden: true }, d.slice(0, 80).map(c => h('li', {}, c.path + ': ', h('span', { class: 'from', text: JSON.stringify(c.from) }), ' → ', h('span', { class: 'to', text: JSON.stringify(c.to) }))));
     body.append(h('div', { class: 'card' + (v.savedBy === 'claude' ? ' claude' : '') },
-      h('div', { class: 'meta' }, h('strong', { text: 'v' + v.version }), h('span', { text: v.savedBy === 'claude' ? 'Claude' : 'You' }), h('span', { text: ago(v.savedAt) }), h('span', { text: d.length + ' changes' }), v.version === S.baseVersion ? h('span', { class: 'tag', text: 'current' }) : null),
+      h('div', { class: 'meta' }, h('input', { type: 'checkbox', 'aria-label': 'Compare v' + v.version, checked: S.cmpSel.has(v.version), onchange: e => { e.target.checked ? S.cmpSel.add(v.version) : S.cmpSel.delete(v.version); renderTabs(); } }), h('strong', { text: 'v' + v.version }), h('span', { text: v.savedBy === 'claude' ? 'Claude' : 'You' }), h('span', { text: ago(v.savedAt) }), h('span', { text: d.length + ' changes' }), v.version === S.baseVersion ? h('span', { class: 'tag', text: 'current' }) : null),
       v.message ? h('div', { class: 'txt', text: v.message }) : null,
       details,
       h('div', { class: 'row' },
         h('button', { class: 'btn small', onclick: e => { details.hidden = !details.hidden; e.currentTarget.textContent = details.hidden ? 'Show changes' : 'Hide changes'; } }, 'Show changes'),
         v.version !== S.baseVersion ? h('button', { class: 'btn small', onclick: () => { S.cur = FX.normalizeEffect(v.effect); edited(); toast(`Loaded v${v.version} as unsaved changes`); } }, 'Load into editor') : null)));
   });
-  body.append(h('div', { class: 'sec row' }, h('button', { class: 'btn small', onclick: downloadEngines }, 'Download for Godot + Defold'), h('button', { class: 'btn small', onclick: download }, 'Sprite sheets only')));
+  body.append(h('div', { class: 'sec row' }, h('button', { class: 'btn small', onclick: downloadEngines }, 'Download for Godot, Defold + other engines'), h('button', { class: 'btn small', onclick: download }, 'Sprite sheets only'), h('button', { class: 'btn small', onclick: recordVideo }, 'Preview video')));
 }
 
 // --------------------------------------------------- compare (variant grid)
@@ -1148,13 +1161,12 @@ function sanitizePatch(patch) {
 }
 function askPrompt(ask) {
   const e = clean(S.cur);
-  const specs = {};
-  for (const l of e.layers) specs[l.type] = FX.TYPES[l.type].params.map(p => ({ key: p.key, type: p.type, min: p.min, max: p.max, unit: p.unit, help: p.help }));
+
   const m = S.metrics ? S.metrics.summary : null;
   return [
     'You tune a 2D game visual effect (a sprite-sheet animation) for an artist. The effect is a stack of layers drawn bottom to top; each layer has typed parameters.',
     'Units: time in frames at ' + e.canvas.fps + ' fps over ' + e.canvas.frames + ' frames; distance in "u" where 1u is half the frame width. Colour parameters name palette slots.',
-    'Parameter reference per layer type (JSON): ' + JSON.stringify(specs),
+    'Layer types (type (engine, blend): param=default[min..max unit], @name = palette colour, ~ease, {choices}):\n' + FX.catalog([...new Set(e.layers.map(l => l.type))]),
     'Current effect (JSON): ' + JSON.stringify({ palette: e.palette, layers: e.layers.map(l => ({ id: l.id, type: l.type, label: l.label, blend: l.blend, params: l.params })) }),
     m ? 'Measured now: brightness peaks at frame ' + m.peakFrame + ', visible until frame ' + m.fadeFrame + ', reaches ' + m.maxRadius + 'u, max coverage ' + Math.round(m.maxCoverage * 100) + '%.' : '',
     S.refs.length ? 'The artist\'s reference images are captioned: ' + S.refs.map(r => JSON.stringify(refName(r))).join('; ') : '',
@@ -1353,6 +1365,29 @@ async function downloadEngines() {
     await S.downloads.save({ filename: `${EID}_v${S.baseVersion}_engines.zip`, data: zip(list) });
   } catch (err) { if (err.code !== 'declined') toast('Export failed: ' + (err.code || err.message)); }
 }
+// A WebM of the preview over the current background, for sharing.
+async function recordVideo() {
+  if (!S.downloads) { toast('Downloads need the Claude app.'); return; }
+  const F = S.cur.canvas.frames, fps = S.cur.canvas.fps;
+  if (S.cache.frames.filter(Boolean).length < F) { toast('Still rendering; try again in a moment.'); return; }
+  const size = S.cache.size, W = size * Math.max(1, Math.round(384 / size));
+  const c = document.createElement('canvas'); c.width = c.height = W;
+  const ctx = c.getContext('2d');
+  const mime = typeof MediaRecorder !== 'undefined' && ['video/webm;codecs=vp9', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
+  if (!c.captureStream || !mime) { toast('Video recording is not available in this browser.'); return; }
+  toast('Recording…');
+  const rec = new MediaRecorder(c.captureStream(fps), { mimeType: mime, videoBitsPerSecond: 4e6 }), chunks = [];
+  rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+  const done = new Promise(r => { rec.onstop = r; });
+  rec.start();
+  for (let i = 0; i < F * (S.cur.canvas.loop ? 3 : 1); i++) {
+    paintBg(ctx, W, W); paintFrame(ctx, S.cache.frames[i % F], W, W);
+    await new Promise(r => setTimeout(r, 1000 / fps));
+  }
+  rec.stop(); await done;
+  try { await S.downloads.save({ filename: `${EID}_v${S.baseVersion}_preview.webm`, data: new Blob(chunks, { type: 'video/webm' }) }); }
+  catch (err) { if (err.code !== 'declined') toast('Download failed: ' + (err.code || err.message)); }
+}
 async function download() {
   if (!S.downloads) { toast('Downloads need the Claude app. Claude can also export straight into the repo.'); return; }
   const e = clean(S.cur), ex = FX.exportPasses(e, { sources: S.sources }), size = ex.size;
@@ -1420,7 +1455,7 @@ $('fxName').onchange = e => {
 async function newEffect() {
   if (!S.db) { toast('Creating effects needs the Claude app.'); return; }
   const all = {}; for (const t of S.templates) Object.assign(all, t.sources || {});
-  const srcMap = await decodeSources(Object.entries(all).map(([sid, data]) => ({ sid, data, name: sid })), true);
+  const srcMap = await decodeSources(Object.entries(all).map(([sid, v]) => (typeof v === 'string' ? { sid, data: v, name: sid } : Object.assign({ sid, name: sid }, v))), true);
   openCompare({
     title: 'New effect', question: '',
     options: S.templates.map((t, i) => ({ key: String(i + 1), label: t.name, effect: FX.normalizeEffect(t.effect), srcMap })),
@@ -1432,7 +1467,7 @@ async function newEffect() {
       const col = `effects/${id}/items`, at = now();
       const effect = Object.assign({}, t.effect, { id, name: t.name });
       try {
-        for (const [sid, data] of Object.entries(t.sources || {})) await S.db.doc(`${col}/src-${sid}`).set({ kind: 'source', sid, name: sid, data, createdAt: at, t: at, author: 'you' });
+        for (const [sid, v] of Object.entries(t.sources || {})) await S.db.doc(`${col}/src-${sid}`).set(Object.assign({ kind: 'source', sid, name: sid, createdAt: at, t: at, author: 'you' }, typeof v === 'string' ? { data: v } : v));
         await S.db.doc(`${col}/v0001`).set({ kind: 'version', version: 1, effect, savedBy: 'you', message: 'From template: ' + t.name, savedAt: at, t: at, changes: [] });
         await S.db.doc(`effects/${id}`).set({ kind: 'index', name: t.name, template: t.id, createdAt: at, t: at });
         location.hash = id; location.reload();
@@ -1447,7 +1482,7 @@ async function boot() {
   try { S.templates = await (await fetch('templates.json')).json(); } catch (e) { S.templates = []; }
   const tpl = S.templates.find(t => t.id === EID);
   let starter = tpl ? tpl.effect : null;
-  if (tpl && tpl.sources) { await decodeSources(Object.entries(tpl.sources).map(([sid, data]) => ({ sid, data, name: sid }))); }
+  if (tpl && tpl.sources) { await decodeSources(Object.entries(tpl.sources).map(([sid, v]) => (typeof v === 'string' ? { sid, data: v, name: sid } : Object.assign({ sid, name: sid }, v)))); }
   if (!starter) starter = { id: EID, name: EID, layers: [{ id: 'flash', type: 'glow' }] };
   fillEffects();
   S.base = FX.normalizeEffect(starter); S.cur = FX.normalizeEffect(starter); S.baseVersion = 0;

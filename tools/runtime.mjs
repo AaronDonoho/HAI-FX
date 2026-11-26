@@ -17,16 +17,17 @@ export const godotShader = (e, l, s) => X.godotShader(e, l, s || {}, { FX, GPU }
 
 export async function exportRuntime(E, effect, outDir, sourcesDataUrls) {
   const sources = {};
-  for (const [sid, url] of Object.entries(sourcesDataUrls || {})) {
-    const bytes = Buffer.from(url.split(',')[1], 'base64'), p = PNG.sync.read(bytes);
-    sources[sid] = { w: p.width, h: p.height, pixel: Math.max(p.width, p.height) <= 128, png: bytes };
+  for (const [sid, v] of Object.entries(sourcesDataUrls || {})) {
+    const url = typeof v === 'string' ? v : v.url || v.data, bytes = Buffer.from(url.split(',')[1], 'base64'), p = PNG.sync.read(bytes);
+    const grid = typeof v === 'object' && v.cols ? { cols: v.cols, rows: v.rows || 1, frames: v.frames || v.cols * (v.rows || 1) } : null;
+    sources[sid] = { w: p.width, h: p.height, pixel: Math.max(p.width / ((grid && grid.cols) || 1), p.height / ((grid && grid.rows) || 1)) <= 128, png: bytes, grid };
   }
   const { files, summary } = await X.exportRuntime(effect, {
     FX, GPU, sources,
     bake: sub => E.call('exportPasses', sub), // the engine page already holds the decoded sprites
     png: async (w, h, rgba) => { const p = new PNG({ width: w, height: h }); p.data = Buffer.from(rgba.buffer ? new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength) : rgba); return PNG.sync.write(p); },
   });
-  for (const sub of ['godot', 'defold']) fs.rmSync(path.join(outDir, sub), { recursive: true, force: true });
+  for (const sub of ['godot', 'defold', 'generic']) fs.rmSync(path.join(outDir, sub), { recursive: true, force: true });
   for (const [rel, data] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(outDir, rel)), { recursive: true });
     fs.writeFileSync(path.join(outDir, rel), data);

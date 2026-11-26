@@ -58,6 +58,9 @@ parameters, metrics and checks.
 - Done: runtime shader export (Godot `.gdshader`, Defold `.fp`/`.material`) with frame-by-frame engine
   verification for every GPU layer type; path-traced lighting (2D scene and 2.5D relief); engine-ready
   download from the Studio.
+- Done: HAI-FX cloud environment with engines preinstalled; `check.mjs` self-check; `catalog`;
+  animated sprite sheets as inputs; normal-map layer; generic export (TexturePacker/Aseprite JSON);
+  GIF and WebM previews; bake-size and shader-cost budgets; side-by-side version comparison.
 - Next candidates: Defold render-target support so below-reading layers run live there too; normal-map
   and light-map export for engine lighting; more mechanisms (chains, belts, linkages).
 

@@ -42,7 +42,7 @@ import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import pngjs from 'pngjs';
-import { openEngine } from './engine.mjs';
+import { openEngine, sourceFileName, sourceUrl } from './engine.mjs';
 
 const { PNG } = pngjs;
 const require = createRequire(import.meta.url);
@@ -85,7 +85,7 @@ function loadState(dump, eid) {
     lastClaudeVersion: [...versions].reverse().find(byClaude),
     notes: of('note').sort((a, b) => tOf(a).localeCompare(tOf(b))),
     asks: of('ask'), proposals: of('proposal'), refs: of('ref'), replies, replied, resolved, isNew, lastClaudeT,
-    sources: Object.fromEntries(of('source').filter(i => /^data:image\//.test(i.data || '')).map(i => [i.sid || i.id, i.data])),
+    sources: Object.fromEntries(of('source').filter(i => /^data:image\//.test(i.data || '')).map(i => [i.sid || i.id, i.cols > 1 || i.rows > 1 ? { url: i.data, cols: i.cols || 1, rows: i.rows || 1, frames: i.frames } : i.data])),
   };
 }
 function versionEffect(st, n) { const v = st.versions.find(x => x.version === n); return v ? v.effect : null; }
@@ -353,7 +353,7 @@ async function run(st, refs, plan) {
     const tmp = path.join(OUT, `verify_${plan.verify}.json`);
     fs.writeFileSync(tmp, JSON.stringify(Object.assign({}, built[plan.verify].effect, { id: st.eid + '_' + plan.verify.toLowerCase() })));
     const sdir = path.join(OUT, 'sources'); fs.rmSync(sdir, { recursive: true, force: true }); fs.mkdirSync(sdir, { recursive: true });
-    for (const [id, url] of Object.entries(st.sources)) fs.writeFileSync(path.join(sdir, id + '.png'), Buffer.from(url.split(',')[1], 'base64'));
+    for (const [id, v] of Object.entries(st.sources)) fs.writeFileSync(path.join(sdir, sourceFileName(id, v)), Buffer.from(sourceUrl(v).split(',')[1], 'base64'));
     try {
       const r = JSON.parse(execFileSync('node', [path.join(HERE, 'fx.mjs'), 'verify', tmp, '--sources', sdir], { maxBuffer: 1 << 26 }).toString());
       verify = Object.entries(r.engines).map(([k, v]) => `${k}: ${v.ok ? `contentError ${v.contentError} maxPx ${v.maxPixelError} slips ${(v.timingSlips || []).length}` : 'FAILED ' + (v.error || '').slice(0, 200)}`).join(' | ');

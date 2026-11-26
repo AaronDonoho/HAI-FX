@@ -21,7 +21,7 @@ for (const id of ids) {
   const all = sourcesBeside(file);
   const used = new Set();
   for (const l of effect.layers || []) for (const v of Object.values(l.params || {})) if (typeof v === 'string' && all[v]) used.add(v);
-  templates.push({ id, name: effect.name || id, effect, sources: Object.fromEntries([...used].map(k => [k, all[k]])) });
+  templates.push({ id, name: effect.name || id, effect, sources: Object.fromEntries([...used].map(k => [k, typeof all[k] === 'string' ? all[k] : { data: all[k].url, cols: all[k].cols, rows: all[k].rows, frames: all[k].frames }])) });
 }
 fs.writeFileSync(path.join(ROOT, 'studio', 'templates.json'), JSON.stringify(templates));
 

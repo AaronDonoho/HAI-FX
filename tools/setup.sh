@@ -4,7 +4,7 @@
 set -euo pipefail
 GODOT_VER=4.7-stable
 DEFOLD_VER=1.14.1
-TOOLS=${TOOLS_DIR:-/home/user/tools}
+TOOLS=${TOOLS_DIR:-$(cd "$(dirname "$0")/.." && pwd)/.tools}
 mkdir -p "$TOOLS"
 
 if ! [ -x /usr/lib/jvm/java-25-openjdk-amd64/bin/java ] || ! ldconfig -p | grep -q libGLU.so.1; then
