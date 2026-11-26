@@ -9,15 +9,27 @@ specific: a layer, a parameter, a frame, a pixel, a version. No vague hints, no 
 1. Claude makes or changes an effect and saves it as a new version in the Studio.
 2. Aaron opens the Studio, tweaks sliders and colours, pins notes on frames, answers Choices,
    and saves a version.
-3. Aaron says so in chat. Claude reads everything (below), restates what it understood,
-   makes the next version, replies on each note, and posts Choices where unsure.
+3. Aaron presses **Send to Claude** in the Studio (or says so in chat). The button posts an
+   artifact comment sent to Claude, which wakes the Claude session watching the Studio.
+   Claude reads everything (below), restates what it understood, makes the next version,
+   replies on each note, posts Choices where unsure, and replies in the comment thread
+   (ArtifactComments `reply`, then `resolve`).
 4. When a version is approved: export, verify in both engines, commit.
+
+Quick changes don't need a round: the Studio's **Ask Claude** box calls Claude from the page
+(`sample` capability, on Aaron's usage), gets three patches, and shows them in Compare. The
+ask and the pick are logged as a note with `kind: "ask"` (status addressed) so rounds see them.
+
+If this session is gone, a new session reads this file, runs `bash tools/setup.sh`, and
+re-arms the watch with ArtifactComments `watch` on the Studio URL.
 
 ## Where things live
 - **Studio** (the shared editor): https://claude.ai/artifact/WjGgnbNxE3E2dxoAgT7C7i
   Source: `studio/index.html`. Published with files `fxcore.js` <- `core/fxcore.js` and
   `<effect>.json` <- `fx/<effect>/effect.json` (the starting point when the database is empty).
-  Capabilities: `db`, `assets`, `downloads`. Open a given effect with `#<effect-id>`.
+  Capabilities: `db`, `assets`, `downloads`, `comments` (Send to Claude), `sample` (Ask Claude).
+  Open a given effect with `#<effect-id>`. Layout is built for the narrow side panel: the
+  preview stays pinned while controls scroll.
 - **Studio database** (read/write with the ArtifactData tool, artifact URL above):
   - `effects/<id>`: current saved version `{effect, version, savedBy, message, savedAt, changes}`
   - `effects/<id>/versions/v0001...`: every saved version (same shape)
@@ -26,14 +38,16 @@ specific: a layer, a parameter, a frame, a pixel, a version. No vague hints, no 
     per-layer share of what was drawn at that pixel. `unsaved` lists edits not yet saved when the
     note was written. Answer a note by setting `reply` and `status: "addressed"`.
   - `effects/<id>/proposals/*`: Choices `{title, question, baseVersion, options: [{key, label,
-    patch | effect}], status: open|answered, pick: {key, comment}}`. A patch is
+    patch | effect}], status: open|answered|withdrawn, pick: {key, comment}}`. Use a full
+    `effect` per option when options add or remove layers; `withdrawn` hides a Choice. A patch is
     `{"<layerId>.<param>": value, "palette.<slot>": "#hex", "canvas.<key>": v, "seed": n}`.
   - `effects/<id>/refs/*`: reference images `{assetId, name, caption}`; image at `/_blob/<assetId>`
     (read with the Artifact tool's `path` = assetId).
 - **Repo mirror**: `fx/<id>/effect.json` holds the latest approved version, committed with the
   version number in the message.
 - **Renderer**: `core/fxcore.js`, one file used by the Studio and the tools, so preview and
-  exports come from identical code. Pure JS, deterministic per seed.
+  exports come from identical code. Pure JS, deterministic per seed. Layer types: glow, ring,
+  sparks (also used for fine debris), smoke, fire (heat-ramp plumes: core/hot/mid/cool/edge).
 
 ## Writing a new version (Claude)
 Write `effects/<id>/versions/v000N` and `effects/<id>` together in one ArtifactData batch, with

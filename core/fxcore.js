@@ -192,6 +192,38 @@
         P('litFraction', 'Lit fraction', 'num', 0.3, { min: 0, max: 1, step: 0.01, group: COLOR, help: 'Share of a puff\'s life it stays lit by the fire.' }),
       ],
     },
+    fire: {
+      label: 'Fire',
+      blurb: 'Billowing fire plumes coloured by heat: white-hot centres cooling to red edges.',
+      blend: 'normal',
+      params: [
+        P('start', 'Start', 'frame', 0, { min: 0, max: 60, group: TIMING }),
+        P('emitFrames', 'Emit over', 'frame', 3, { min: 0, max: 30, group: TIMING }),
+        P('lifeMin', 'Life min', 'frame', 10, { min: 1, max: 90, group: TIMING }),
+        P('lifeMax', 'Life max', 'frame', 18, { min: 1, max: 90, group: TIMING }),
+        P('fadeEase', 'Fade curve', 'ease', 'inQuad', { group: TIMING }),
+        P('count', 'Plumes', 'int', 22, { min: 1, max: 120, group: SHAPE }),
+        P('emitRadius', 'Emit radius', 'num', 0.12, { min: 0, max: 1, step: 0.01, unit: 'u', group: SHAPE }),
+        P('directionDeg', 'Direction', 'angle', 90, { min: -180, max: 180, step: 1, unit: '°', group: SHAPE }),
+        P('spreadDeg', 'Spread', 'angle', 360, { min: 0, max: 360, step: 1, unit: '°', group: SHAPE }),
+        P('sizeStart', 'Size start', 'num', 0.14, { min: 0.01, max: 1, step: 0.01, unit: 'u', group: SHAPE }),
+        P('sizeEnd', 'Size end', 'num', 0.34, { min: 0.01, max: 1.2, step: 0.01, unit: 'u', group: SHAPE }),
+        P('speedMin', 'Speed min', 'num', 0.5, { min: 0, max: 4, step: 0.01, unit: 'u/s', group: MOTION }),
+        P('speedMax', 'Speed max', 'num', 1.6, { min: 0, max: 4, step: 0.01, unit: 'u/s', group: MOTION }),
+        P('drag', 'Drag', 'num', 3, { min: 0, max: 12, step: 0.1, group: MOTION }),
+        P('rise', 'Rise', 'num', 0.2, { min: -2, max: 2, step: 0.01, unit: 'u/s²', group: MOTION }),
+        P('intensity', 'Opacity', 'num', 1, { min: 0, max: 1, step: 0.01, group: LOOK }),
+        P('heat', 'Heat', 'num', 1.1, { min: 0.2, max: 1.6, step: 0.01, group: LOOK, help: 'Starting temperature. Higher = more white and yellow.' }),
+        P('cooling', 'Cooling', 'num', 0.8, { min: 0, max: 1.5, step: 0.01, group: LOOK, help: 'How fast plumes cool toward red over their life.' }),
+        P('erosion', 'Erosion', 'num', 0.5, { min: 0, max: 1, step: 0.01, group: LOOK, help: 'How strongly plumes break into tongues and wisps as they age.' }),
+        P('noiseScale', 'Noise scale', 'num', 3.5, { min: 0.5, max: 10, step: 0.1, group: LOOK }),
+        P('colorCore', 'Core', 'color', 'white', { group: COLOR }),
+        P('colorHot', 'Hot', 'color', 'hot', { group: COLOR }),
+        P('colorMid', 'Mid', 'color', 'mid', { group: COLOR }),
+        P('colorCool', 'Cool', 'color', 'deep', { group: COLOR }),
+        P('colorEdge', 'Edge', 'color', 'ember', { group: COLOR }),
+      ],
+    },
   };
 
   function paramSpec(type, key) {
@@ -403,6 +435,51 @@
         }
       }
     },
+  };
+
+  // Temperature ramp: t = 1 core, .75 hot, .5 mid, .28 cool, 0 edge.
+  function heatColor(stops, t) {
+    const pos = [0, 0.28, 0.5, 0.75, 1];
+    if (t >= 1) return stops[4];
+    if (t <= 0) return stops[0];
+    let i = 0; while (i < 3 && t > pos[i + 1]) i++;
+    const k = (t - pos[i]) / (pos[i + 1] - pos[i]), a = stops[i], b = stops[i + 1];
+    return [lerp(a[0], b[0], k), lerp(a[1], b[1], k), lerp(a[2], b[2], k)];
+  }
+  RENDER.fire = function (effect, layer, p, ctx, buf) {
+    const list = spawnList(effect, layer, p, ctx);
+    const stops = [p.colorEdge, p.colorCool, p.colorMid, p.colorHot, p.colorCore].map(c => slot(ctx, c));
+    const seed = strHash(layer.id) & 0xffff;
+    const S = ctx.size, add = layer.blend === 'add';
+    for (const s of list) {
+      const age = ctx.frame - s.birth;
+      if (age < 0 || age > s.life) continue;
+      const lt = age / s.life;
+      const [x, y] = motion(s.x0, s.y0, s.vx, s.vy, 0, -p.rise * ctx.R, p.drag, age / ctx.fps);
+      const rad = lerp(p.sizeStart, p.sizeEnd, ease('outQuad', lt)) * ctx.R * s.jitter;
+      const A = p.intensity * (1 - ease(p.fadeEase, lt)) * Math.min(1, (age + 1) / 1.5);
+      if (A <= 0 || rad < 0.5) continue;
+      const T0 = p.heat * Math.max(0, 1 - p.cooling * lt);
+      const thr = p.erosion * lt;
+      const minX = Math.max(0, Math.floor(x - rad)), maxX = Math.min(S - 1, Math.ceil(x + rad));
+      const minY = Math.max(0, Math.floor(y - rad)), maxY = Math.min(S - 1, Math.ceil(y + rad));
+      const ns = p.noiseScale / ctx.R;
+      for (let py = minY; py <= maxY; py++) {
+        for (let px = minX; px <= maxX; px++) {
+          const dx = px + 0.5 - x, dy = py + 0.5 - y;
+          const d = Math.sqrt(dx * dx + dy * dy) / rad;
+          if (d >= 1) continue;
+          const shape = 1 - smoothstep(0.25, 1, d);
+          const n = fbm(dx * ns + s.ox, dy * ns + s.oy - lt * 1.2, seed);
+          const body = shape * (0.25 + 1.25 * n);
+          const dens = smoothstep(thr, thr + 0.28, body);
+          const a = A * dens;
+          if (a <= 0.002) continue;
+          const c = heatColor(stops, T0 * Math.pow(Math.min(1.4, body), 1.4));
+          put(buf, (py * S + px) * 4, c[0], c[1], c[2], a, add);
+        }
+      }
+    }
   };
 
   // Render every enabled layer of one frame into its own premultiplied buffer.
