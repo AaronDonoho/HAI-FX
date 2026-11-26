@@ -657,39 +657,65 @@
   }
 
   // -------------------------------------------------------------- metrics
-  function measure(effectIn) {
+  // Per frame, for the whole effect and for each layer on its own:
+  //   energy (brightness, normalised to a 128x128 frame), coverage, 90% radius (units),
+  // plus overdraw and stray pixels for the whole effect. Summaries give peak/start/fade frames.
+  // opts.keepFrames returns the final RGBA frames (over black) for image matching.
+  function seriesSummary(energy, radius, coverage) {
+    const F = energy.length, peak = Math.max(0, ...energy);
+    let startFrame = -1, fadeFrame = 0;
+    for (let f = 0; f < F; f++) {
+      if (startFrame < 0 && energy[f] >= 0.02 * peak && peak > 0) startFrame = f;
+      if (energy[f] >= 0.05 * peak && peak > 0) fadeFrame = f;
+    }
+    return {
+      peakFrame: peak > 0 ? energy.indexOf(peak) : -1, startFrame, fadeFrame,
+      peakEnergy: +peak.toFixed(1), maxRadius: Math.max(0, ...radius), maxCoverage: Math.max(0, ...coverage),
+    };
+  }
+  function r90Of(hist, wsum) {
+    let acc = 0;
+    for (let b = 0; b < hist.length; b++) { acc += hist[b]; if (acc >= 0.9 * wsum) return (b + 1) / 32; }
+    return 0;
+  }
+  function measure(effectIn, opts) {
+    opts = opts || {};
     const effect = normalizeEffect(effectIn); effect.__norm = true;
     const F = effect.canvas.frames;
     const m = { energy: [], coverage: [], radius: [], overdraw: [], orphans: [] };
+    const per = {};
+    for (const l of effect.layers) if (l.enabled) per[l.id] = { energy: [], coverage: [], radius: [] };
+    const frames = [];
     let size = 0;
     for (let f = 0; f < F; f++) {
       const r = renderFrame(effect, f, { bg: [0, 0, 0] });
       size = r.size;
-      const N = size * size, cx = size / 2, R = size / 2;
-      const pres = new Float32Array(N);
+      if (opts.keepFrames) frames.push(r.data);
+      const N = size * size, cx = size / 2, R = size / 2, norm = 16384 / N;
+      const distBin = p => { const x = (p % size) + 0.5 - cx, y = Math.floor(p / size) + 0.5 - cx; return Math.min(63, Math.floor((Math.hypot(x, y) / R) * 32)); };
       let layerHits = 0, union = 0;
       const any = new Uint8Array(N);
       for (const L of r.layers) {
-        const b = L.buf;
+        const b = L.buf, hist = new Float32Array(64);
+        let e = 0, cov = 0, ws = 0;
         for (let p = 0; p < N; p++) {
-          const w = L.blend === 'add' ? Math.max(b[p * 4], b[p * 4 + 1], b[p * 4 + 2]) : b[p * 4 + 3];
-          if (w > 0.02) { layerHits++; if (!any[p]) { any[p] = 1; union++; } }
+          const i = p * 4;
+          const w = L.blend === 'add' ? Math.max(b[i], b[i + 1], b[i + 2]) : b[i + 3];
+          if (w > 0.02) { layerHits++; cov++; if (!any[p]) { any[p] = 1; union++; } }
+          const lv = lum(Math.min(1, b[i]), Math.min(1, b[i + 1]), Math.min(1, b[i + 2]));
+          e += lv;
+          if (lv > 0.01) { hist[distBin(p)] += lv; ws += lv; }
         }
+        const P = per[L.id];
+        if (P) { P.energy.push(+(e * norm).toFixed(2)); P.coverage.push(+(cov / N).toFixed(4)); P.radius.push(+r90Of(hist, ws).toFixed(3)); }
       }
       let energy = 0, covered = 0, wsum = 0;
       const hist = new Float32Array(64);
       for (let p = 0; p < N; p++) {
         const i = p * 4, L = lum(r.data[i] / 255, r.data[i + 1] / 255, r.data[i + 2] / 255);
-        energy += L; pres[p] = L;
-        if (L > 0.02) {
-          covered++;
-          const x = (p % size) + 0.5 - cx, y = Math.floor(p / size) + 0.5 - cx;
-          const d = Math.min(63, Math.floor((Math.hypot(x, y) / R) * 32));
-          hist[d] += L; wsum += L;
-        }
+        energy += L;
+        if (L > 0.02) { covered++; hist[distBin(p)] += L; wsum += L; }
       }
-      let acc = 0, r90 = 0;
-      for (let b = 0; b < 64; b++) { acc += hist[b]; if (acc >= 0.9 * wsum) { r90 = (b + 1) / 32; break; } }
       let orphans = 0;
       if (effect.canvas.mode === 'pixel') {
         const A = p => r.data[p * 4] + r.data[p * 4 + 1] + r.data[p * 4 + 2] > 0;
@@ -700,34 +726,116 @@
           if (!nb) orphans++;
         }
       }
-      // Energy normalised per 128x128 so pixel and smooth modes compare.
-      m.energy.push(+(energy * (16384 / N)).toFixed(2));
+      m.energy.push(+(energy * norm).toFixed(2));
       m.coverage.push(+(covered / N).toFixed(4));
-      m.radius.push(+r90.toFixed(3));
+      m.radius.push(+r90Of(hist, wsum).toFixed(3));
       m.overdraw.push(+(union ? layerHits / union : 0).toFixed(2));
       m.orphans.push(orphans);
     }
-    const peak = Math.max(...m.energy);
-    const peakFrame = m.energy.indexOf(peak);
-    let fadeFrame = 0;
-    for (let f = 0; f < F; f++) if (m.energy[f] >= 0.05 * peak) fadeFrame = f;
-    const summary = {
-      peakFrame, fadeFrame,
-      peakEnergy: +peak.toFixed(1),
-      maxRadius: Math.max(...m.radius),
-      maxCoverage: Math.max(...m.coverage),
+    const summary = Object.assign(seriesSummary(m.energy, m.radius, m.coverage), {
       maxOverdraw: Math.max(...m.overdraw),
       orphanPixels: m.orphans.reduce((a, b) => a + b, 0),
-    };
-    return { perFrame: m, summary, checks: evaluateChecks(effect, summary) };
+      layers: {},
+    });
+    for (const [id, P] of Object.entries(per)) summary.layers[id] = seriesSummary(P.energy, P.radius, P.coverage);
+    const out = { perFrame: m, perLayer: per, summary, checks: evaluateChecks(effect, summary) };
+    if (opts.keepFrames) { out.frames = frames; out.size = size; }
+    return out;
+  }
+  // A check is {metric, op, value, layer?}. Without layer it reads the whole-effect summary.
+  function metricValue(summary, c) {
+    if (c.layer) return summary.layers && summary.layers[c.layer] ? summary.layers[c.layer][c.metric] : undefined;
+    return summary[c.metric];
   }
   function evaluateChecks(effect, summary) {
     const ops = { '<=': (a, b) => a <= b, '>=': (a, b) => a >= b, '<': (a, b) => a < b, '>': (a, b) => a > b, '==': (a, b) => a === b };
     return (effect.checks || []).map(c => {
-      const v = summary[c.metric];
+      const v = metricValue(summary, c);
       const pass = v !== undefined && ops[c.op] ? ops[c.op](v, c.value) : null;
       return Object.assign({}, c, { actual: v, pass });
     });
+  }
+
+  // ------------------------------------------------------- image matching
+  // Framing- and resolution-independent descriptors of a bright subject on a dark
+  // background (a reference photo, or an effect frame rendered over black). The subject is
+  // re-sampled so its 90% radius is 40 px before shape statistics are taken.
+  function describeImage(rgba, w, h) {
+    const L = new Float32Array(w * h);
+    let sx = 0, sy = 0, sw = 0, lit = 0;
+    for (let p = 0; p < w * h; p++) {
+      const v = lum(rgba[p * 4] / 255, rgba[p * 4 + 1] / 255, rgba[p * 4 + 2] / 255);
+      L[p] = v;
+      if (v > 0.1) { lit++; sx += (p % w) * v; sy += Math.floor(p / w) * v; sw += v; }
+    }
+    if (lit < 30) return null;
+    const cx = sx / sw, cy = sy / sw;
+    const ds = [];
+    for (let p = 0; p < w * h; p++) if (L[p] > 0.1) ds.push(Math.hypot((p % w) - cx, Math.floor(p / w) - cy));
+    ds.sort((a, b) => a - b);
+    const r90 = Math.max(2, ds[Math.floor(ds.length * 0.9)]);
+    // resample to a 128x128 grid where r90 = 40 px (box filter over the source footprint)
+    const G = 128, sc = r90 / 40, g = new Float32Array(G * G), rgb = new Float32Array(G * G * 3);
+    const fp = Math.max(1, Math.round(sc));
+    for (let y = 0; y < G; y++) for (let x = 0; x < G; x++) {
+      const ox = cx + (x - G / 2 + 0.5) * sc, oy = cy + (y - G / 2 + 0.5) * sc;
+      let acc = 0, r = 0, gg = 0, b = 0, n = 0;
+      for (let j = 0; j < fp; j++) for (let i = 0; i < fp; i++) {
+        const px = Math.floor(ox + (i - (fp - 1) / 2)), py = Math.floor(oy + (j - (fp - 1) / 2));
+        if (px < 0 || py < 0 || px >= w || py >= h) { n++; continue; }
+        const q = py * w + px; acc += L[q]; r += rgba[q * 4]; gg += rgba[q * 4 + 1]; b += rgba[q * 4 + 2]; n++;
+      }
+      const k = y * G + x; g[k] = acc / n; rgb[k * 3] = r / n / 255; rgb[k * 3 + 1] = gg / n / 255; rgb[k * 3 + 2] = b / n / 255;
+    }
+    const bands = [0, 0, 0, 0, 0], ramp = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    const radial = new Array(12).fill(0), radialN = new Array(12).fill(0);
+    const ang = new Array(36).fill(null).map(() => []);
+    let litG = 0, edge = 0, sparse = 0, outer = 0;
+    for (let y = 0; y < G; y++) for (let x = 0; x < G; x++) {
+      const k = y * G + x, v = g[k], dx = x + 0.5 - G / 2, dy = y + 0.5 - G / 2, d = Math.hypot(dx, dy) / 40;
+      const rb = Math.min(11, Math.floor(d * 8)); radial[rb] += v; radialN[rb]++;
+      if (v <= 0.1) continue;
+      litG++;
+      const bi = Math.min(4, Math.floor(((v - 0.1) / 0.9) * 5));
+      bands[bi]++; ramp[bi][0] += rgb[k * 3]; ramp[bi][1] += rgb[k * 3 + 1]; ramp[bi][2] += rgb[k * 3 + 2];
+      ang[Math.floor(((Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI)) * 36) % 36].push(d);
+      let nb = 0, nb4 = 0;
+      for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+        if (!i && !j) continue;
+        const xx = x + i, yy = y + j;
+        const on = xx >= 0 && yy >= 0 && xx < G && yy < G && g[yy * G + xx] > 0.1;
+        if (on) { nb++; if (!i || !j) nb4++; }
+      }
+      if (nb4 < 4) edge++;
+      if (nb <= 2) sparse++;
+      if (d > 1.15) outer++;
+    }
+    for (let i = 0; i < 5; i++) { const n = bands[i] || 1; ramp[i] = ramp[i].map(c => +(c / n).toFixed(3)); bands[i] = +(bands[i] / litG).toFixed(4); }
+    const lobeR = ang.map(a => { if (!a.length) return 0; a.sort((p, q) => p - q); return a[Math.floor(a.length * 0.9)]; });
+    const meanR = lobeR.reduce((a, b) => a + b, 0) / 36;
+    const lobes = Math.sqrt(lobeR.reduce((a, b) => a + (b - meanR) * (b - meanR), 0) / 36) / (meanR || 1);
+    return {
+      bands, ramp, radial: radial.map((v, i) => +(radialN[i] ? v / radialN[i] : 0).toFixed(4)),
+      fill: +(litG / (Math.PI * 40 * 40)).toFixed(4), lobes: +lobes.toFixed(4),
+      rough: +(edge / Math.sqrt(litG)).toFixed(4), speckle: +(sparse / litG).toFixed(4), outer: +(outer / litG).toFixed(4),
+    };
+  }
+  // Similarity per aspect, each 0..1 (1 = same). Weights default to equal.
+  function compareDescriptors(a, b, weights) {
+    if (!a || !b) return null;
+    const sim = (d, k) => Math.exp(-d / k);
+    const l1 = (x, y) => x.reduce((s, v, i) => s + Math.abs(v - y[i]), 0);
+    const rampD = a.ramp.reduce((s, c, i) => s + l1(c, b.ramp[i]) * (a.bands[i] + b.bands[i]) / 2, 0);
+    const aspects = {
+      colour: sim(l1(a.bands, b.bands) + rampD * 2, 1.0),
+      volume: sim(Math.abs(a.fill - b.fill) * 2 + l1(a.radial, b.radial) / 3, 0.8),
+      shape: sim(Math.abs(a.lobes - b.lobes) * 3 + Math.abs(a.rough - b.rough) / 4, 0.6),
+      debris: sim(Math.abs(a.speckle - b.speckle) * 6 + Math.abs(a.outer - b.outer) * 3, 0.3),
+    };
+    const W = Object.assign({ colour: 1, volume: 1, shape: 1, debris: 1 }, weights || {});
+    let s = 0, n = 0;
+    for (const k of Object.keys(aspects)) { aspects[k] = +aspects[k].toFixed(3); s += aspects[k] * W[k]; n += W[k]; }
+    return Object.assign(aspects, { overall: +(s / n).toFixed(3) });
   }
 
   // --------------------------------------------------------- diff + patch
@@ -771,6 +879,6 @@
 
   return {
     EASE, TYPES, ease, paramSpec, normalizeEffect, renderLayers, renderFrame, flatten, exportPasses, passGroups, renderPassFrame,
-    attribute, measure, evaluateChecks, diff, applyPatch, hexToRgb, rgbToHex, lum,
+    attribute, measure, evaluateChecks, metricValue, describeImage, compareDescriptors, diff, applyPatch, hexToRgb, rgbToHex, lum,
   };
 });

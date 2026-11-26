@@ -283,6 +283,12 @@ const $ = id => document.getElementById(id);
 const BGS = { dark: ['Dark', '#14121a'], black: ['Black', '#000000'], mid: ['Mid grey', '#5b5866'], light: ['Light', '#d9d6e0'], checker: ['Checker', null] };
 const QUICK = ['too fast', 'too slow', 'too bright', 'too dim', 'too big', 'too small', 'colour off', 'too busy', 'needs more', 'love this'];
 const ASSET_RE = /^[0-9a-f]{32}$/i;
+// Everything for an effect lives in ONE collection, one document per item, each with a `kind`
+// and a `t` timestamp updated on every write, so Claude reads a whole round with one query.
+const ITEMS = `effects/${EID}/items`;
+const now = () => new Date().toISOString();
+const newId = p => p + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const item = id => S.db.doc(ITEMS + '/' + id);
 
 // ------------------------------------------------------------------ state
 const S = {
@@ -527,7 +533,7 @@ function openComposer(p, hits) {
 function closeComposer() { if (S.composer) { S.composer.box.remove(); S.composer.marker.remove(); S.composer = null; } }
 async function addNote(note) {
   if (!S.db) { S.notes.unshift(Object.assign({ id: 'local' + Date.now() }, note)); renderTabs(); draw(); return false; }
-  await S.db.collection(`effects/${EID}/notes`).add(note);
+  await item(newId(note.kind === 'ask' ? 'a' : 'n')).set(Object.assign({ kind: 'note' }, note, { t: now() }));
   return true;
 }
 async function submitNote(st, text) {
@@ -788,8 +794,10 @@ function noteCard(n, idx) {
   }
   return card;
 }
-async function setNoteStatus(n, status) { try { await S.db.doc(`effects/${EID}/notes/${n.id}`).update({ status }); } catch (e) { toast('Could not update: ' + (e.code || e.message)); } }
+async function setNoteStatus(n, status) { try { await item(n.id).update({ status, t: now() }); } catch (e) { toast('Could not update: ' + (e.code || e.message)); } }
 function tabNotes(body) {
+  const rounds = (S.rounds || []).slice(-3).reverse();
+  for (const r of rounds) body.append(h('div', { class: 'card claude' }, h('div', { class: 'meta' }, h('span', { class: 'dot claude' }), h('strong', { text: 'Claude · round' }), h('span', { text: ago(r.t || r.createdAt) })), h('div', { class: 'reply', text: r.message || '' })));
   body.append(h('div', { class: 'empty' }, 'Click anywhere on the preview to pin a note. It records the frame, the spot, which layers drew it and their settings, so Claude knows exactly what you mean.'));
   if (!S.notes.some(n => n.status !== 'dismissed')) { body.append(h('div', { class: 'empty', text: 'No notes yet.' })); return; }
   S.notes.forEach((n, i) => { if (n.status !== 'dismissed') body.append(noteCard(n, S.notes.length - i)); });
@@ -823,7 +831,7 @@ function tabRefs(body) {
     const beside = S.sideRef && S.sideRef.assetId === r.assetId, asBg = S.bg === 'ref' && S.bgRef && S.bgRef.assetId === r.assetId;
     grid.append(h('div', { class: 'ref' },
       h('img', { src: refUrl(r), alt: refName(r), title: 'Click to pick colours', onclick: () => openRef(r) }),
-      h('input', { class: 'tin', value: r.caption || '', placeholder: 'What to take from this?', 'aria-label': 'Reference caption', onchange: e => S.db && S.db.doc(`effects/${EID}/refs/${r.id}`).update({ caption: e.target.value }) }),
+      h('input', { class: 'tin', value: r.caption || '', placeholder: 'What to take from this?', 'aria-label': 'Reference caption', onchange: e => S.db && item(r.id).update({ caption: e.target.value, t: now() }) }),
       h('div', { class: 'row' },
         h('button', { class: 'btn small', 'aria-pressed': String(!!beside), onclick: () => showBeside(beside ? null : r) }, 'Beside effect'),
         h('button', { class: 'btn small', 'aria-pressed': String(!!asBg), onclick: () => setBackground(asBg ? 'dark' : 'ref:' + r.assetId) }, 'As background'),
@@ -832,11 +840,23 @@ function tabRefs(body) {
   }
   body.append(grid);
 }
+// A small JPEG copy rides along in the database so Claude can read references without fetching each file.
+async function makeThumb(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    const sc = Math.min(1, 320 / Math.max(im.naturalWidth, im.naturalHeight));
+    const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(im.naturalWidth * sc)); c.height = Math.max(1, Math.round(im.naturalHeight * sc));
+    c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.85);
+  } finally { URL.revokeObjectURL(url); }
+}
 async function uploadRefs(files) {
   for (const f of files) {
     try {
+      const thumb = await makeThumb(f).catch(() => null);
       const a = await S.assets.upload(f);
-      await S.db.collection(`effects/${EID}/refs`).add({ assetId: a.id, name: f.name, caption: '', createdAt: new Date().toISOString(), author: 'you' });
+      await item(newId('ref')).set({ kind: 'ref', assetId: a.id, name: f.name, caption: '', thumb, createdAt: now(), t: now(), author: 'you' });
       toast(`Added ${f.name}. Use "Beside effect" to compare.`);
     } catch (e) { toast('Upload failed: ' + (e.code || e.message)); }
   }
@@ -845,7 +865,7 @@ async function deleteRef(r) {
   try {
     if (S.sideRef && S.sideRef.assetId === r.assetId) showBeside(null);
     if (S.bgRef && S.bgRef.assetId === r.assetId) setBackground('dark');
-    await S.db.doc(`effects/${EID}/refs/${r.id}`).delete(); if (S.assets) await S.assets.delete(r.assetId);
+    await item(r.id).delete(); if (S.assets) await S.assets.delete(r.assetId);
   } catch (e) { toast('Could not remove: ' + (e.code || e.message)); }
 }
 
@@ -925,7 +945,7 @@ async function finishCompare(ov, comment, none) {
   const cfg = ov.cfg;
   const cell = !none && ov.cells.find(c => c.key === ov.selected);
   if (cfg.proposal && S.db) {
-    try { await S.db.doc(`effects/${EID}/proposals/${cfg.proposal.id}`).update({ status: 'answered', pick: { key: cell ? cell.key : null, comment: comment || '', at: new Date().toISOString() } }); }
+    try { await item(cfg.proposal.id).update({ status: 'answered', pick: { key: cell ? cell.key : null, comment: comment || '', at: now() }, t: now() }); }
     catch (e) { toast('Could not save your pick: ' + (e.code || e.message)); return; }
   }
   if (cfg.onPick) cfg.onPick(cell, comment);
@@ -1140,8 +1160,9 @@ async function saveVersion(message) {
   const doc = { effect: clean(S.cur), version: v, savedBy: 'you', message: message || '', savedAt: new Date().toISOString(), changes: d.slice(0, 200) };
   let ok = false;
   try {
-    await S.db.doc(`effects/${EID}/versions/${id}`).set(doc);
-    await S.db.doc(`effects/${EID}`).set(doc);
+    const existing = await item(id).get();
+    if (existing.exists) { toast(`v${v} was just saved elsewhere. Your edits are kept; save again to make v${v + 1}.`); S.saving = false; $('saveGo').disabled = false; return false; }
+    await item(id).set(Object.assign({ kind: 'version', t: doc.savedAt }, doc));
     adoptBase(doc, true); ok = true;
   } catch (e) { toast('Save failed: ' + (e.code || e.message)); }
   S.saving = false; $('saveGo').disabled = false;
@@ -1235,34 +1256,47 @@ async function boot() {
   if (!db) { banner(h('span', { text: 'Working offline: edits stay in this tab. Open the page in the Claude app to save versions and notes.' })); updateHeader(); return; }
   updateHeader(); renderTabs();
   const loading = setTimeout(() => banner(h('span', { text: 'Still connecting to saved versions. Showing the starting point until they load.' })), 10000);
-  db.doc(`effects/${EID}`).onSnapshot(snap => {
-    if (!snap.metadata.fromCache) { clearTimeout(loading); banner(null); }
-    if (!snap.exists) return;
-    const d = snap.data();
-    if (!d || !d.effect || (d.version || 0) <= S.baseVersion) return;
-    if (!changes().length) { adoptBase(d); if (d.savedBy === 'claude' && S.propsLoaded) toast(`Claude saved v${d.version}` + (d.message ? `: ${d.message}` : '')); return; }
-    S.remotePending = d;
-    banner([h('strong', { text: `${d.savedBy === 'claude' ? 'Claude' : 'Someone'} saved v${d.version}` }), h('span', { class: 'muted', text: d.message || '' }), h('div', { class: 'spacer' }),
-      h('button', { class: 'btn small primary', onclick: () => { adoptBase(S.remotePending); S.remotePending = null; banner(null); } }, `Load v${d.version} (drops your edits)`),
-      h('button', { class: 'btn small', onclick: () => { const keep = S.cur; adoptBase(S.remotePending, true); S.cur = keep; S.remotePending = null; banner(null); edited(); } }, 'Keep my edits on top')]);
-  }, err => { clearTimeout(loading); banner(h('span', { text: 'Saved versions are unavailable right now (' + err.code + '). Edits stay in this tab.' })); });
-  db.collection(`effects/${EID}/notes`).orderBy('createdAt', 'desc').limit(200).onSnapshot(q => { S.notes = q.docs.map(d => Object.assign({ id: d.id }, d.data())); renderTabs(); drawPins(); }, () => {});
-  db.collection(`effects/${EID}/proposals`).orderBy('createdAt', 'desc').limit(50).onSnapshot(q => {
+  let seenReply = store.get('reply.' + EID) || '';
+  db.collection(ITEMS).limit(1000).onSnapshot(q => {
+    if (!q.metadata.fromCache) { clearTimeout(loading); if (!S.remotePending) banner(null); }
+    const all = q.docs.map(d => Object.assign({ id: d.id }, d.data()));
+    const tOf = i => String(i.t || i.savedAt || i.createdAt || '');
+    // Claude's round replies: answers per note, and notes it resolved
+    const replies = all.filter(i => i.kind === 'reply').sort((a, b) => tOf(a).localeCompare(tOf(b)));
+    const replyMap = {}, resolved = new Set();
+    for (const r of replies) { Object.assign(replyMap, r.notes || {}); (r.resolve || []).forEach(id => resolved.add(id)); }
+    S.rounds = replies;
+    S.notes = all.filter(i => i.kind === 'note' || i.kind === 'ask').map(n => Object.assign({}, n, {
+      reply: n.reply || replyMap[n.id] || '', status: n.status === 'open' && resolved.has(n.id) ? 'addressed' : n.status,
+    })).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     const before = openProposals().length;
-    S.proposals = q.docs.map(d => Object.assign({ id: d.id }, d.data()));
+    S.proposals = all.filter(i => i.kind === 'proposal').sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     if (S.propsLoaded && openProposals().length > before) toast('Claude posted a choice for you');
+    S.refs = all.filter(i => i.kind === 'ref' && ASSET_RE.test(String(i.assetId || ''))).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    S.versions = all.filter(i => i.kind === 'version').sort((a, b) => b.version - a.version);
+    const last = replies[replies.length - 1];
+    if (last && tOf(last) > seenReply) {
+      seenReply = tOf(last); store.set('reply.' + EID, seenReply);
+      banner([h('span', { class: 'dot claude' }), h('strong', { text: 'Claude:' }), h('span', { text: String(last.message || 'Finished a round.').slice(0, 400) }), h('div', { class: 'spacer' }), h('button', { class: 'btn small ghost', onclick: () => banner(null) }, 'Dismiss')]);
+    }
     if (!q.metadata.fromCache) S.propsLoaded = true;
-    renderTabs();
-  }, () => {});
-  db.collection(`effects/${EID}/refs`).orderBy('createdAt', 'desc').limit(60).onSnapshot(q => {
-    S.refs = q.docs.map(d => Object.assign({ id: d.id }, d.data())).filter(r => ASSET_RE.test(String(r.assetId || '')));
     fillBgSelect();
     const side = store.get('sideref'), bgr = store.get('bgref');
     if (side && !S.sideRef) { const r = S.refs.find(x => x.assetId === side); if (r) showBeside(r); }
     if (bgr && S.bg !== 'ref') { const r = S.refs.find(x => x.assetId === bgr); if (r) setBackground('ref:' + r.assetId); }
-    if (S.tab === 'refs') renderTabs();
-  }, () => {});
-  db.collection(`effects/${EID}/versions`).orderBy('version', 'desc').limit(40).onSnapshot(q => { S.versions = q.docs.map(d => d.data()); if (S.tab === 'history') renderTabs(); }, () => {});
+    // the newest version is the current one
+    const d = S.versions[0];
+    if (d && d.effect && d.version > S.baseVersion) {
+      if (!changes().length || S.baseVersion === 0) { adoptBase(d); if (d.savedBy === 'claude' && S.propsLoaded && S.baseVersion) toast(`Claude saved v${d.version}` + (d.message ? `: ${d.message}` : '')); }
+      else {
+        S.remotePending = d;
+        banner([h('strong', { text: `${d.savedBy === 'claude' ? 'Claude' : 'Someone'} saved v${d.version}` }), h('span', { class: 'muted', text: d.message || '' }), h('div', { class: 'spacer' }),
+          h('button', { class: 'btn small primary', onclick: () => { adoptBase(S.remotePending); S.remotePending = null; banner(null); } }, `Load v${d.version} (drops your edits)`),
+          h('button', { class: 'btn small', onclick: () => { const keep = S.cur; adoptBase(S.remotePending, true); S.cur = keep; S.remotePending = null; banner(null); edited(); } }, 'Keep my edits on top')]);
+      }
+    }
+    renderTabs(); drawPins();
+  }, err => { clearTimeout(loading); banner(h('span', { text: 'Saved versions are unavailable right now (' + err.code + '). Edits stay in this tab.' })); });
 }
 boot();
 })();

@@ -30,29 +30,49 @@ re-arms the watch with ArtifactComments `watch` on the Studio URL.
   Capabilities: `db`, `assets`, `downloads`, `comments` (Send to Claude), `sample` (Ask Claude).
   Open a given effect with `#<effect-id>`. Layout is built for the narrow side panel: the
   preview stays pinned while controls scroll.
-- **Studio database** (read/write with the ArtifactData tool, artifact URL above):
-  - `effects/<id>`: current saved version `{effect, version, savedBy, message, savedAt, changes}`
-  - `effects/<id>/versions/v0001...`: every saved version (same shape)
-  - `effects/<id>/notes/*`: pinned notes `{text, tags, frame, x, y, size, layer, hits, params,
-    baseVersion, unsaved, status: open|addressed|dismissed, reply, author}`. `hits` is the exact
-    per-layer share of what was drawn at that pixel. `unsaved` lists edits not yet saved when the
-    note was written. Answer a note by setting `reply` and `status: "addressed"`.
-  - `effects/<id>/proposals/*`: Choices `{title, question, baseVersion, options: [{key, label,
-    patch | effect}], status: open|answered|withdrawn, pick: {key, comment}}`. Use a full
-    `effect` per option when options add or remove layers; `withdrawn` hides a Choice. A patch is
-    `{"<layerId>.<param>": value, "palette.<slot>": "#hex", "canvas.<key>": v, "seed": n}`.
-  - `effects/<id>/refs/*`: reference images `{assetId, name, caption}`; image at `/_blob/<assetId>`
-    (read with the Artifact tool's `path` = assetId).
+- **Studio database**: ONE collection per effect, `effects/<id>/items`, one document per item.
+  Every item has `kind` and `t` (ISO time, updated on every write). Kinds:
+  - `version` (doc `v0001`…): `{version, effect, savedBy, message, savedAt, changes}`. The
+    newest is current. Versions are only ever created, never overwritten.
+  - `note` (doc `n-…`): pinned note `{text, tags, frame, x, y, size, layer, hits, params,
+    baseVersion, unsaved, mode, status: open|addressed|dismissed}`. `hits` is the exact
+    per-layer share at that pixel; `unsaved` lists edits not yet saved at the time.
+  - `ask` (doc `a-…`): an in-page Ask Claude request and what was picked.
+  - `proposal` (doc `p0003-…`): a Choice `{title, question, options: [{key, label, effect, facts}],
+    status: open|answered|withdrawn, pick: {key, comment, at}}`.
+  - `ref` (doc `ref-…`): reference image `{assetId, caption, thumb}`; `thumb` is a 320 px JPEG
+    data URL, so references never need separate reads.
+  - `reply` (doc `r0001`…): Claude's round summary `{message, notes: {noteId: text}, resolve: [noteIds]}`.
+    Notes are answered and resolved through replies (creation only: no version pins needed).
+  (Older per-type collections from the first studio versions are no longer read.)
 - **Repo mirror**: `fx/<id>/effect.json` holds the latest approved version, committed with the
   version number in the message.
 - **Renderer**: `core/fxcore.js`, one file used by the Studio and the tools, so preview and
   exports come from identical code. Pure JS, deterministic per seed. Layer types: glow, ring,
   sparks (also used for fine debris), smoke, fire (heat-ramp plumes: core/hot/mid/cool/edge).
 
-## Writing a new version (Claude)
-Write `effects/<id>/versions/v000N` and `effects/<id>` together in one ArtifactData batch, with
-`savedBy: "claude"`, a one-line `message` saying what changed and why, and `changes` from
-`FX.diff(prev, next)`. Pin `if_version` on the main doc. Never overwrite a version Aaron saved.
+## A round in ~6 tool calls
+1. **Read everything**: ArtifactData `query`, collection `effects/<id>/items`, `limit` 1000,
+   `out_dir` `build/dump`.
+2. **Inspect**: `node tools/round.mjs inspect build/dump` prints a digest (what changed since
+   Claude's last round, picks, asks, every open note with its layer hits, per-layer metrics,
+   reference match) and writes `build/round/inspect.png`: frames, before/after, each layer alone,
+   each note on the exact frame the artist saw with its pin, references, curves.
+3. **Look**: Read `build/round/inspect.png` (one image).
+4. **Run a plan**: `node tools/round.mjs run build/dump - <<'EOF' {plan} EOF`. One plan can
+   hold hand-made candidates (patches, added/removed layers) and searches (hundreds of
+   variants on worker threads, scored against targets from notes and the reference match),
+   render `build/round/run.png`, verify a candidate in both engines, mirror the new version to
+   `fx/<id>/effect.json`, and write the database documents. Plan format: top of `tools/round.mjs`.
+   Read `run.png`; repeat this step only if the result is wrong.
+5. **Write**: one ArtifactData `batch` with the `WRITES` array the run printed (version,
+   proposal, reply; all are creations).
+6. **Close**: commit and push; if the round came from Send to Claude, reply in the comment
+   thread (ArtifactComments) and resolve it.
+
+Notes become `targets` (e.g. "smoke dies too fast" → `{"layer":"smoke","metric":"fadeFrame",
+"op":">=","value":20}`); a reference becomes `match`. Without references, targets plus a small
+penalty for moving away from the current values keep searches close to what the artist has.
 
 ## Proposals (Choices)
 - Early: 3-4 options that differ a lot (mood, timing, shape). Later: 4-6 options that differ in
