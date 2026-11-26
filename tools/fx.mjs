@@ -216,6 +216,7 @@ on every pass (same frame) to replay in sync.${pixel ? '\nPixel mode: set graphi
 // ------------------------------------------------------------------- verify
 function verifyGodot(e, outDir, work) {
   const id = e.id || 'effect', S = e.canvas.mode === 'pixel' ? e.canvas.pixelSize : e.canvas.size;
+  const V = Math.max(S, 128); // Godot enforces a minimum window size; render larger and crop the centre.
   fs.rmSync(work, { recursive: true, force: true });
   fs.mkdirSync(path.join(work, 'fx', id), { recursive: true });
   for (const f of fs.readdirSync(path.join(outDir, 'godot'))) fs.copyFileSync(path.join(outDir, 'godot', f), path.join(work, 'fx', id, f));
@@ -226,8 +227,8 @@ config/name="hai_fx_verify"
 run/main_scene="res://main.tscn"
 
 [display]
-window/size/viewport_width=${S}
-window/size/viewport_height=${S}
+window/size/viewport_width=${V}
+window/size/viewport_height=${V}
 
 [rendering]
 renderer/rendering_method="gl_compatibility"
@@ -258,11 +259,12 @@ func _grab():
 script = ExtResource("1")
 
 [node name="FX" parent="." instance=ExtResource("2")]
-position = Vector2(${S / 2}, ${S / 2})
+position = Vector2(${V / 2}, ${V / 2})
 `);
   const cap = path.join(work, 'frames');
   sh(`timeout 120 ${TOOLS.godot} --headless --path ${work} --import`, { stdio: 'ignore' });
   sh(`timeout 120 xvfb-run -a -s "-screen 0 1024x768x24" ${TOOLS.godot} --path ${work} --rendering-driver opengl3 --fixed-fps ${e.canvas.fps} -- ${cap}`);
+  cropCaptures(cap, S);
   return cap;
 }
 
@@ -325,6 +327,17 @@ embedded_instances {
   const cap = path.join(work, 'frames');
   sh(`cd ${work}/bundle/hai_fx_verify && timeout 300 xvfb-run -a -s "-screen 0 ${S}x${S}x24" ./hai_fx_verify.x86_64 --config=hai.out=${cap}`);
   return cap;
+}
+
+// Crop every capture to the centred S x S region the effect occupies.
+function cropCaptures(dir, S) {
+  for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.png'))) {
+    const im = readPng(path.join(dir, f));
+    if (im.w === S && im.h === S) continue;
+    const ox = Math.floor((im.w - S) / 2), oy = Math.floor((im.h - S) / 2), out = new Uint8Array(S * S * 4);
+    for (let y = 0; y < S; y++) out.set(im.data.subarray(((oy + y) * im.w + ox) * 4, ((oy + y) * im.w + ox + S) * 4), y * S * 4);
+    writePng(path.join(dir, f), S, S, out);
+  }
 }
 
 // Compare captured engine frames with the preview over black.

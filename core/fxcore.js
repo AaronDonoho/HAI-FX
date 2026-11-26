@@ -515,34 +515,47 @@
   // sprite each, drawn in order. Additive passes are RGB on black (alpha 1 where lit),
   // to be drawn with Add blending. Normal passes are straight alpha.
   // Pixel mode flattens to a single palette-locked normal pass.
-  function exportPasses(effectIn) {
-    const effect = normalizeEffect(effectIn); effect.__norm = true;
+  function passGroups(effectIn) {
+    const effect = effectIn.__norm ? effectIn : normalizeEffect(effectIn);
+    const pixel = effect.canvas.mode === 'pixel';
     const groups = [];
     for (const l of effect.layers) {
       if (!l.enabled) continue;
-      const blend = effect.canvas.mode === 'pixel' ? 'normal' : l.blend;
+      const blend = pixel ? 'normal' : l.blend;
       const last = groups[groups.length - 1];
-      if (last && last.blend === blend) last.ids.push(l.id); else groups.push({ blend, ids: [l.id] });
+      if (last && (pixel || last.blend === blend)) last.layers.push(l.id); else groups.push({ blend, layers: [l.id] });
     }
+    return groups.map((g, gi) => Object.assign(g, { name: 'g' + gi + '_' + g.blend }));
+  }
+  // One frame of every pass, as straight-alpha 8-bit RGBA images.
+  function renderPassFrame(effectIn, frame, groups) {
+    const effect = effectIn.__norm ? effectIn : Object.assign(normalizeEffect(effectIn), { __norm: true });
+    groups = groups || passGroups(effect);
     const pixel = effect.canvas.mode === 'pixel';
-    if (pixel && groups.length) { groups.splice(0, groups.length, { blend: 'normal', ids: groups.flatMap(g => g.ids) }); }
-    const passes = groups.map((g, gi) => ({ name: 'g' + gi + '_' + g.blend, blend: g.blend, layers: g.ids, frames: [] }));
-    for (let f = 0; f < effect.canvas.frames; f++) {
-      const { size, layers } = renderLayers(effect, f);
-      for (const pass of passes) {
-        const ls = layers.filter(L => pass.layers.includes(L.id));
-        let img;
-        if (pixel) img = straight8FromFloat(pixelize(effect, size, flatten(size, ls, null)));
-        else if (pass.blend === 'add') {
-          const flat = flatten(size, ls.map(L => Object.assign({}, L, { blend: 'add' })), [0, 0, 0]);
-          img = new Uint8ClampedArray(flat.length);
-          for (let i = 0; i < flat.length; i += 4) {
-            img[i] = flat[i] * 255 + 0.5; img[i + 1] = flat[i + 1] * 255 + 0.5; img[i + 2] = flat[i + 2] * 255 + 0.5;
-            img[i + 3] = (flat[i] + flat[i + 1] + flat[i + 2]) > 0.004 ? 255 : 0;
-          }
-        } else img = toStraight8(flatten(size, ls, null));
-        pass.frames.push(img);
+    const { size, layers } = renderLayers(effect, frame);
+    const images = groups.map(pass => {
+      const ls = layers.filter(L => pass.layers.includes(L.id));
+      if (pixel) return straight8FromFloat(pixelize(effect, size, flatten(size, ls, null)));
+      if (pass.blend === 'add') {
+        const flat = flatten(size, ls.map(L => Object.assign({}, L, { blend: 'add' })), [0, 0, 0]);
+        const img = new Uint8ClampedArray(flat.length);
+        for (let i = 0; i < flat.length; i += 4) {
+          img[i] = flat[i] * 255 + 0.5; img[i + 1] = flat[i + 1] * 255 + 0.5; img[i + 2] = flat[i + 2] * 255 + 0.5;
+          img[i + 3] = (flat[i] + flat[i + 1] + flat[i + 2]) > 0.004 ? 255 : 0;
+        }
+        return img;
       }
+      return toStraight8(flatten(size, ls, null));
+    });
+    return { size, images, layers };
+  }
+  function exportPasses(effectIn) {
+    const effect = Object.assign(normalizeEffect(effectIn), { __norm: true });
+    const groups = passGroups(effect);
+    const passes = groups.map(g => ({ name: g.name, blend: g.blend, layers: g.layers, frames: [] }));
+    for (let f = 0; f < effect.canvas.frames; f++) {
+      const r = renderPassFrame(effect, f, groups);
+      r.images.forEach((img, i) => passes[i].frames.push(img));
     }
     const size = effect.canvas.mode === 'pixel' ? effect.canvas.pixelSize : effect.canvas.size;
     return { size, fps: effect.canvas.fps, frameCount: effect.canvas.frames, passes };
@@ -577,12 +590,13 @@
       size = r.size;
       const N = size * size, cx = size / 2, R = size / 2;
       const pres = new Float32Array(N);
-      let layerHits = 0;
+      let layerHits = 0, union = 0;
+      const any = new Uint8Array(N);
       for (const L of r.layers) {
         const b = L.buf;
         for (let p = 0; p < N; p++) {
           const w = L.blend === 'add' ? Math.max(b[p * 4], b[p * 4 + 1], b[p * 4 + 2]) : b[p * 4 + 3];
-          if (w > 0.02) layerHits++;
+          if (w > 0.02) { layerHits++; if (!any[p]) { any[p] = 1; union++; } }
         }
       }
       let energy = 0, covered = 0, wsum = 0;
@@ -613,7 +627,7 @@
       m.energy.push(+(energy * (16384 / N)).toFixed(2));
       m.coverage.push(+(covered / N).toFixed(4));
       m.radius.push(+r90.toFixed(3));
-      m.overdraw.push(+(covered ? layerHits / covered : 0).toFixed(2));
+      m.overdraw.push(+(union ? layerHits / union : 0).toFixed(2));
       m.orphans.push(orphans);
     }
     const peak = Math.max(...m.energy);
@@ -679,7 +693,7 @@
   }
 
   return {
-    EASE, TYPES, ease, paramSpec, normalizeEffect, renderLayers, renderFrame, flatten, exportPasses,
+    EASE, TYPES, ease, paramSpec, normalizeEffect, renderLayers, renderFrame, flatten, exportPasses, passGroups, renderPassFrame,
     attribute, measure, evaluateChecks, diff, applyPatch, hexToRgb, rgbToHex, lum,
   };
 });
