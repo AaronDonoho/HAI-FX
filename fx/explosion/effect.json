@@ -1,8 +1,5 @@
 {
-  "id": "explosion",
   "name": "Explosion",
-  "notes": "Neutral starting point: flash, shockwave, sparks, smoke. No reference yet.",
-  "seed": 7,
   "canvas": {
     "size": 128,
     "pixelSize": 48,
@@ -12,118 +9,6 @@
     "dither": true,
     "alphaCut": 0.5
   },
-  "palette": {
-    "white": "#fff6e0",
-    "hot": "#ffcf5c",
-    "mid": "#ff8a2a",
-    "deep": "#d9411e",
-    "ember": "#8c1f1a",
-    "smoke": "#3d3540",
-    "ash": "#77707a"
-  },
-  "layers": [
-    {
-      "id": "smoke",
-      "type": "smoke",
-      "label": "Smoke",
-      "blend": "normal",
-      "enabled": true,
-      "params": {
-        "start": 2,
-        "emitFrames": 4,
-        "lifeMin": 15,
-        "lifeMax": 23,
-        "fadeEase": "inQuad",
-        "count": 18,
-        "emitRadius": 0.2,
-        "sizeStart": 0.16,
-        "sizeEnd": 0.46,
-        "speedMin": 0.3,
-        "speedMax": 0.9,
-        "drag": 1.5,
-        "rise": 0.3,
-        "opacity": 0.85,
-        "erosion": 0.6,
-        "noiseScale": 3,
-        "colorLit": "deep",
-        "color": "smoke",
-        "litFraction": 0.3
-      }
-    },
-    {
-      "id": "flash",
-      "type": "glow",
-      "label": "Core flash",
-      "blend": "add",
-      "enabled": true,
-      "params": {
-        "start": 0,
-        "duration": 7,
-        "hold": 2,
-        "fadeEase": "inQuad",
-        "radiusStart": 0.28,
-        "radiusEnd": 0.55,
-        "sizeEase": "outCubic",
-        "core": 0.15,
-        "falloff": 1.8,
-        "intensity": 1,
-        "colorInner": "white",
-        "colorOuter": "hot"
-      }
-    },
-    {
-      "id": "ring",
-      "type": "ring",
-      "label": "Shockwave",
-      "blend": "add",
-      "enabled": true,
-      "params": {
-        "start": 1,
-        "duration": 9,
-        "fadeEase": "inQuad",
-        "radiusStart": 0.1,
-        "radiusEnd": 0.9,
-        "sizeEase": "outExpo",
-        "thicknessStart": 0.1,
-        "thicknessEnd": 0.02,
-        "softness": 0.7,
-        "opacity": 0.8,
-        "breakup": 0.35,
-        "breakupScale": 5,
-        "color": "hot",
-        "colorInner": "mid"
-      }
-    },
-    {
-      "id": "sparks",
-      "type": "sparks",
-      "label": "Sparks",
-      "blend": "add",
-      "enabled": true,
-      "params": {
-        "start": 0,
-        "emitFrames": 2,
-        "lifeMin": 9,
-        "lifeMax": 20,
-        "fadeEase": "inQuad",
-        "count": 50,
-        "emitRadius": 0.05,
-        "directionDeg": 90,
-        "spreadDeg": 360,
-        "speedMin": 1.2,
-        "speedMax": 3.4,
-        "drag": 2.5,
-        "gravity": 0.8,
-        "size": 0.02,
-        "shrink": 0.5,
-        "stretch": 0.05,
-        "softness": 0.4,
-        "intensity": 1.2,
-        "colorStart": "white",
-        "colorEnd": "mid"
-      }
-    }
-  ],
   "checks": [
     {
       "id": "punch",
@@ -153,5 +38,133 @@
       "op": "<=",
       "value": 4
     }
-  ]
+  ],
+  "id": "explosion",
+  "layers": [
+    {
+      "id": "smoke",
+      "type": "smoke",
+      "label": "Smoke",
+      "blend": "normal",
+      "enabled": true,
+      "params": {
+        "start": 6,
+        "emitFrames": 4,
+        "lifeMin": 14,
+        "lifeMax": 18,
+        "fadeEase": "inQuad",
+        "count": 16,
+        "emitRadius": 0.25,
+        "sizeStart": 0.2,
+        "sizeEnd": 0.5,
+        "speedMin": 0.2,
+        "speedMax": 0.6,
+        "drag": 1.5,
+        "rise": 0.6,
+        "opacity": 0.8,
+        "erosion": 0.55,
+        "noiseScale": 3,
+        "colorLit": "deep",
+        "color": "smoke",
+        "litFraction": 0.35
+      }
+    },
+    {
+      "id": "fire",
+      "type": "fire",
+      "label": "Fire plumes",
+      "blend": "normal",
+      "enabled": true,
+      "params": {
+        "start": 0,
+        "emitFrames": 5,
+        "lifeMin": 12,
+        "lifeMax": 20,
+        "fadeEase": "inQuad",
+        "count": 110,
+        "emitRadius": 0.15,
+        "directionDeg": 90,
+        "spreadDeg": 360,
+        "sizeStart": 0.55,
+        "sizeEnd": 0.95,
+        "speedMin": 0.3,
+        "speedMax": 1.4,
+        "drag": 5.5,
+        "rise": 0.2,
+        "intensity": 1,
+        "heat": 1.3,
+        "cooling": 0.7,
+        "erosion": 0.6,
+        "noiseScale": 2.5,
+        "connect": 0,
+        "fuse": 1.6,
+        "colorCore": "white",
+        "colorHot": "hot",
+        "colorMid": "mid",
+        "colorCool": "deep",
+        "colorEdge": "ember"
+      }
+    },
+    {
+      "id": "flash",
+      "type": "glow",
+      "label": "Core flash",
+      "blend": "add",
+      "enabled": true,
+      "params": {
+        "start": 0,
+        "duration": 5,
+        "hold": 1,
+        "fadeEase": "inQuad",
+        "radiusStart": 0.2,
+        "radiusEnd": 0.45,
+        "sizeEase": "outCubic",
+        "core": 0.2,
+        "falloff": 1.6,
+        "intensity": 0.9,
+        "colorInner": "white",
+        "colorOuter": "bright"
+      }
+    },
+    {
+      "id": "debris",
+      "type": "sparks",
+      "label": "Debris",
+      "blend": "add",
+      "enabled": true,
+      "params": {
+        "start": 0,
+        "emitFrames": 2,
+        "lifeMin": 10,
+        "lifeMax": 20,
+        "fadeEase": "inQuad",
+        "count": 200,
+        "emitRadius": 0.15,
+        "directionDeg": 90,
+        "spreadDeg": 360,
+        "speedMin": 1,
+        "speedMax": 3.3,
+        "drag": 2,
+        "gravity": 0.5,
+        "size": 0.008,
+        "shrink": 0.3,
+        "stretch": 0.035,
+        "softness": 0.2,
+        "intensity": 1.6,
+        "colorStart": "bright",
+        "colorEnd": "deep"
+      }
+    }
+  ],
+  "palette": {
+    "ash": "#5c5450",
+    "bright": "#fbe155",
+    "deep": "#ffb347",
+    "ember": "#8e0900",
+    "hot": "#ff8c1a",
+    "mid": "#e8431a",
+    "smoke": "#2e2a2c",
+    "white": "#fef5bb"
+  },
+  "seed": 7
 }

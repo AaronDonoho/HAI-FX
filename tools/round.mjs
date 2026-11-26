@@ -130,13 +130,16 @@ function loadState(dump, eid) {
   const of = k => items.filter(i => i.kind === k);
   const versions = of('version').sort((a, b) => a.version - b.version);
   const current = versions[versions.length - 1];
-  const lastClaudeT = items.filter(byClaude).map(tOf).sort().pop() || '';
+  // When the artist answers one of Claude's items its t moves, so Claude's own activity is
+  // measured by creation time, not by t.
+  const lastClaudeT = items.filter(byClaude).map(it => it.createdAt || it.savedAt || it.t || '').sort().pop() || '';
+  const draft = items.find(i => i.kind === 'draft' && i.effect && (i.changes || []).length) || null;
   const isNew = it => tOf(it) > lastClaudeT && !byClaude(it);
   const replies = of('reply').sort((a, b) => tOf(a).localeCompare(tOf(b)));
   const replied = {}, resolved = new Set();
   for (const r of replies) { Object.assign(replied, r.notes || {}); (r.resolve || []).forEach(id => resolved.add(id)); }
   return {
-    eid, items, versions, current,
+    eid, items, versions, current, draft,
     lastClaudeVersion: [...versions].reverse().find(byClaude),
     notes: of('note').sort((a, b) => tOf(a).localeCompare(tOf(b))),
     asks: of('ask'), proposals: of('proposal'), refs: of('ref'), replies, replied, resolved, isNew, lastClaudeT,
@@ -232,6 +235,7 @@ async function inspect(st, refs) {
     const d = FX.diff(lc.effect, e);
     lines.push(`CHANGED since Claude's v${lc.version} (${d.length}): ` + d.slice(0, 40).map(c => `${c.path} ${JSON.stringify(c.from)}→${JSON.stringify(c.to)}`).join('; '));
   }
+  if (st.draft) lines.push(`DRAFT (unsaved, ${st.draft.t}) on v${st.draft.baseVersion}, ${st.draft.changes.length} changes: ` + st.draft.changes.slice(0, 40).map(c => `${c.path}=${JSON.stringify(c.to)}`).join('; '));
   const newV = st.versions.filter(st.isNew);
   if (newV.length) lines.push(`NEW VERSIONS: ` + newV.map(v => `v${v.version} "${v.message || ''}"`).join(', '));
   for (const p of st.proposals.filter(p => p.status === 'answered' && p.pick && p.pick.at > st.lastClaudeT)) {
@@ -259,6 +263,7 @@ async function inspect(st, refs) {
   let html = `<h1>${esc(st.eid)} · v${cur.version} by ${esc(who(cur))}</h1><div class="small">${esc(cur.message || '')}</div>`;
   html += `<h2>Current v${cur.version}</h2>${strip(e, frames)}`;
   if (lc && lc.version !== cur.version) html += `<h2>Before: Claude's v${lc.version}</h2>${strip(lc.effect, frames)}`;
+  if (st.draft) html += `<h2>Unsaved draft on v${st.draft.baseVersion} (${st.draft.changes.length} changes)</h2>${strip(st.draft.effect, frames)}`;
   html += `<h2>Each layer alone</h2>`;
   for (const l of FX.normalizeEffect(e).layers.filter(l => l.enabled)) {
     html += `<div class="row"><div class="lbl"><b>${esc(l.label)}</b> <span class="small">${l.type} · ${l.blend}</span><div class="m">${esc(fmtSum(ev.summary.layers[l.id] || {}))}</div></div>${strip(e, frames, { only: [l.id], px: 96 })}</div>`;
@@ -342,7 +347,8 @@ async function run(st, refs, plan) {
   if (typeof plan.base === 'string' && plan.base.includes('/')) {
     const [pid, key] = plan.base.split('/'), pr = st.proposals.find(p => p.id === pid), o = pr && (pr.options || []).find(o => o.key === key);
     plan.__base = o ? (o.effect || FX.applyPatch(versionEffect(st, pr.baseVersion) || st.current.effect, o.patch || {})) : null;
-  } else plan.__base = plan.base && plan.base !== 'current' ? versionEffect(st, +plan.base) : st.current.effect;
+  } else if (plan.base === 'draft') plan.__base = st.draft ? st.draft.effect : null;
+  else plan.__base = plan.base && plan.base !== 'current' ? versionEffect(st, +plan.base) : st.current.effect;
   if (!plan.__base) throw new Error('base version not found');
   const want = plan.match && plan.match.refs ? (plan.match.refs === 'all' ? refs : refs.filter(r => plan.match.refs.includes(r.id))) : [];
   const ctx = { targets: plan.targets || [], refDescs: want.map(r => r.desc).filter(Boolean), aspects: plan.match && plan.match.aspects, matchWeight: plan.match ? (plan.match.weight === undefined ? 1 : plan.match.weight) : 0 };

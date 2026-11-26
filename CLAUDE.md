@@ -1,15 +1,15 @@
 # HAI-FX: working agreement
 
-Aaron and Claude build game effects (explosions, hits, pickups, magic...) for **Defold and Godot**,
-in **smooth HD and pixel art**, by iterating in layers. Aaron hand-tunes and judges; Claude
+An artist and Claude build game effects (explosions, hits, pickups, magic...) for **Defold and Godot**,
+in **smooth HD and pixel art**, by iterating in layers. The artist hand-tunes and judges; Claude
 builds, measures, explains and proposes. Every message between us should point at something
 specific: a layer, a parameter, a frame, a pixel, a version. No vague hints, no blind tweaking.
 
 ## The loop
 1. Claude makes or changes an effect and saves it as a new version in the Studio.
-2. Aaron opens the Studio, tweaks sliders and colours, pins notes on frames, answers Choices,
+2. The artist opens the Studio, tweaks sliders and colours, pins notes on frames, answers Choices,
    and saves a version.
-3. Aaron presses **Send to Claude** in the Studio (or says so in chat). The button posts an
+3. The artist presses **Send to Claude** in the Studio (or says so in chat). The button posts an
    artifact comment sent to Claude, which wakes the Claude session watching the Studio.
    Claude reads everything (below), restates what it understood, makes the next version,
    replies on each note, posts Choices where unsure, and replies in the comment thread
@@ -17,7 +17,7 @@ specific: a layer, a parameter, a frame, a pixel, a version. No vague hints, no 
 4. When a version is approved: export, verify in both engines, commit.
 
 Quick changes don't need a round: the Studio's **Ask Claude** box calls Claude from the page
-(`sample` capability, on Aaron's usage), gets three patches, and shows them in Compare. The
+(`sample` capability, on the artist's usage), gets three patches, and shows them in Compare. The
 ask and the pick are logged as a note with `kind: "ask"` (status addressed) so rounds see them.
 
 If this session is gone, a new session reads this file, runs `bash tools/setup.sh`, and
@@ -42,6 +42,8 @@ re-arms the watch with ArtifactComments `watch` on the Studio URL.
     status: open|answered|withdrawn, pick: {key, comment, at}}`.
   - `ref` (doc `ref-…`): reference image `{assetId, caption, thumb}`; `thumb` is a 320 px JPEG
     data URL, so references never need separate reads.
+  - `draft` (doc `draft`): the artist's unsaved working copy `{baseVersion, effect, changes}`,
+    autosaved ~2 s after each edit; `round.mjs` shows it and plans can start from `"base": "draft"`.
   - `reply` (doc `r0001`…): Claude's round summary `{message, notes: {noteId: text}, resolve: [noteIds]}`.
     Notes are answered and resolved through replies (creation only: no version pins needed).
   (Older per-type collections from the first studio versions are no longer read.)
@@ -106,4 +108,4 @@ with the preview: `contentError` (mean abs error, 0-255) and `timingSlips`.
 `FX.measure(effect)` per frame: brightness (energy), coverage, 90% radius (units, 1 = frame
 edge), overdraw, stray pixels (pixel mode). Summary: peak frame, fade frame, max radius, max
 coverage, max overdraw. `effect.checks` turn these into pass/fail tests shown in the Studio.
-Turn Aaron's notes into checks where they're measurable ("dies too fast" -> fadeFrame >= N).
+Turn the artist's notes into checks where they're measurable ("dies too fast" -> fadeFrame >= N).

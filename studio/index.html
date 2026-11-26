@@ -91,13 +91,21 @@ select.tin { padding: 3px 4px; }
 .pin.hot { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
 .composer { position: absolute; z-index: 9; width: min(320px, calc(100vw - 48px)); background: var(--panel); border: 1px solid var(--line-2); border-radius: 8px; padding: 12px; line-height: 1.45;
   box-shadow: 0 12px 40px rgba(0,0,0,0.55); display: flex; flex-direction: column; gap: 8px; }
-.composer.sheet { position: fixed; left: max(12px, env(safe-area-inset-left, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); bottom: calc(12px + env(safe-area-inset-bottom, 0px)); width: auto; z-index: 25; }
+.composer.sheet { position: fixed; left: max(12px, env(safe-area-inset-left, 0px)); right: max(12px, env(safe-area-inset-right, 0px)); bottom: calc(12px + var(--kb, 0px) + env(safe-area-inset-bottom, 0px)); width: auto; z-index: 25; max-height: calc(100% - var(--kb, 0px) - 24px); overflow: auto; }
 .hits, .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip { border: 1px solid var(--line-2); background: var(--panel-2); border-radius: 999px; padding: 2px 9px; font-size: 12px; color: var(--muted); }
 .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 
 .transport, .viewbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 12px; background: var(--panel); border-top: 1px solid var(--line); }
-.transport input[type="range"] { flex: 1 1 140px; min-width: 100px; accent-color: var(--accent); }
+.scrubwrap { position: relative; flex: 1 1 140px; min-width: 100px; display: flex; align-items: center; }
+.scrubwrap input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
+.ticks { position: absolute; left: 7px; right: 7px; bottom: -5px; height: 6px; pointer-events: none; }
+.ticks i { position: absolute; top: 0; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); transform: translateX(-50%); }
+.ticks i.done { background: var(--good); }
+.pin.near { opacity: 0.45; transform: translate(-50%, -50%) scale(0.8); }
+.pin.pending { border-style: dashed; }
+.cerr { color: var(--bad); font-size: 12px; }
+@media (max-width: 899px) { .typing .viewer { position: static !important; box-shadow: none; } }
 .tread { color: var(--muted); white-space: nowrap; }
 .tread b { color: var(--text); font-weight: 500; }
 .viewbar select, .transport select { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: var(--r); padding: 3px 5px; max-width: 160px; }
@@ -188,7 +196,7 @@ input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 3px
 .refview canvas { max-width: 100%; height: auto; cursor: crosshair; }
 .picked { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .picked .sw { width: 28px; height: 28px; border-radius: 4px; border: 1px solid var(--line-2); }
-.toast { position: fixed; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line-2);
+.toast { display: flex; align-items: center; gap: 10px; position: fixed; left: 50%; bottom: calc(16px + var(--kb, 0px) + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line-2);
   border-radius: 8px; padding: 8px 14px; z-index: 40; box-shadow: 0 8px 30px rgba(0,0,0,0.5); max-width: calc(100vw - 32px); }
 @media (max-width: 560px) {
   .mark, .fxname { display: none; }
@@ -237,7 +245,7 @@ input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 3px
         <button class="btn small" id="playBtn" aria-label="Pause" style="min-width:56px">Pause</button>
         <button class="ibtn" id="prevBtn" aria-label="Previous frame">◀</button>
         <button class="ibtn" id="nextBtn" aria-label="Next frame">▶</button>
-        <input type="range" id="scrub" min="0" max="23" value="0" aria-label="Frame">
+        <div class="scrubwrap"><input type="range" id="scrub" min="0" max="23" value="0" aria-label="Frame"><div class="ticks" id="ticks" aria-hidden="true"></div></div>
         <span class="tread mono" id="tread"><b>00</b>/24</span>
         <select id="speed" class="hide-sm" aria-label="Playback speed"><option value="1">1×</option><option value="0.5">½×</option><option value="0.25">¼×</option></select>
       </div>
@@ -326,7 +334,12 @@ const clone = o => JSON.parse(JSON.stringify(o));
 const clean = e => { const c = clone(e); delete c.__norm; return c; };
 const fmt = (v, step) => { if (typeof v !== 'number') return String(v); const d = step && step < 1 ? Math.min(4, Math.max(0, -Math.floor(Math.log10(step)))) : 0; return v.toFixed(d); };
 const ago = iso => { if (!iso) return ''; const s = (Date.now() - Date.parse(iso)) / 1000; if (s < 60) return 'just now'; if (s < 3600) return Math.floor(s / 60) + ' min ago'; if (s < 86400) return Math.floor(s / 3600) + ' h ago'; return new Date(iso).toLocaleDateString(); };
-function toast(msg) { const t = h('div', { class: 'toast', role: 'status', text: msg }); document.body.append(t); setTimeout(() => t.remove(), 3200); }
+function toast(msg, action) {
+  document.querySelectorAll('.toast').forEach(t => t.remove());
+  const t = h('div', { class: 'toast', role: 'status' }, h('span', { text: msg }),
+    action ? h('button', { class: 'btn small', onclick: () => { t.remove(); action.run(); } }, action.label) : null);
+  document.body.append(t); setTimeout(() => t.remove(), action ? 8000 : 3500);
+}
 const layerById = id => S.cur.layers.find(l => l.id === id);
 const fxSize = e => (e.canvas.mode === 'pixel' ? e.canvas.pixelSize : e.canvas.size);
 const changes = () => (S.base && S.cur ? FX.diff(S.base, S.cur) : []);
@@ -513,11 +526,12 @@ function openComposer(p, hits) {
   renderHits();
   const tags = h('div', { class: 'chips' }, QUICK.map(q => h('button', { class: 'chip', 'aria-pressed': 'false', onclick: e => { st.tags.has(q) ? st.tags.delete(q) : st.tags.add(q); e.currentTarget.setAttribute('aria-pressed', String(st.tags.has(q))); } }, q)));
   const ta = h('textarea', { class: 'tin', id: 'noteText', placeholder: 'What looks wrong or right here?', rows: 3 });
+  const err = h('div', { class: 'cerr', role: 'alert' });
   const box = h('div', { class: 'composer', role: 'dialog', 'aria-label': 'New note' },
     h('div', { class: 'row' }, h('strong', { text: `Note · frame ${st.frame}` }), h('span', { class: 'muted mono', text: `x ${Math.round(p.x)} y ${Math.round(p.y)}` })),
-    h('div', { class: 'muted', text: hits.length ? 'Drawn here by:' : 'Nothing is drawn here on this frame. Which layer is this about?' }), hitsEl, tags, ta,
+    h('div', { class: 'muted', text: hits.length ? 'Drawn here by:' : 'Nothing is drawn here on this frame. Which layer is this about?' }), hitsEl, tags, ta, err,
     h('div', { class: 'row' },
-      h('button', { class: 'btn primary', onclick: () => submitNote(st, ta.value) }, 'Pin note'),
+      h('button', { class: 'btn primary', onclick: () => submitNote(st, ta.value, err) }, 'Pin note'),
       h('button', { class: 'btn ghost', onclick: closeComposer }, 'Cancel')));
   const stage = $('stage');
   if (window.innerWidth < 900) { box.classList.add('sheet'); document.body.append(box); }
@@ -536,7 +550,7 @@ async function addNote(note) {
   await item(newId(note.kind === 'ask' ? 'a' : 'n')).set(Object.assign({ kind: 'note' }, note, { t: now() }));
   return true;
 }
-async function submitNote(st, text) {
+async function submitNote(st, text, errEl) {
   const l = st.layer && layerById(st.layer);
   const note = {
     text: text.trim(), tags: [...st.tags], frame: st.frame, x: +st.x.toFixed(1), y: +st.y.toFixed(1), size: S.cache.size,
@@ -545,23 +559,41 @@ async function submitNote(st, text) {
     baseVersion: S.baseVersion, unsaved: changes().slice(0, 60),
     status: 'open', author: 'you', createdAt: new Date().toISOString(),
   };
-  if (!note.text && !note.tags.length) { toast('Add a word or a tag first.'); return; }
+  if (!note.text && !note.tags.length) { if (errEl) errEl.textContent = 'Type a few words or pick a tag first.'; return; }
+  const label = l ? l.label : null, num = S.notes.filter(n => n.kind !== 'ask').length + 1;
+  // show the pin at once; the saved copy replaces it when the database confirms
+  const temp = S.db ? Object.assign({ id: 'pending-' + Date.now(), pending: true }, note) : null;
+  if (temp) { S.notes.unshift(temp); renderTabs(); drawPins(); }
   closeComposer();
-  try { const saved = await addNote(note); toast(saved ? 'Note pinned. Claude will see it.' : 'Pinned here only. Saving needs the Claude app.'); }
-  catch (e) { toast('Could not save the note: ' + (e.code || e.message)); }
+  try {
+    const saved = await addNote(note);
+    toast(saved ? `Note ${num} pinned on frame ${note.frame}${label ? ' · ' + label : ''}. Claude reads it next round.` : 'Pinned in this tab only. Saving needs the Claude app.', { label: 'See notes', run: () => switchTab('notes') });
+  } catch (e) {
+    if (temp) { S.notes = S.notes.filter(n => n !== temp); renderTabs(); drawPins(); }
+    toast('The note was NOT saved (' + (e.code || e.message) + ').', { label: 'Try again', run: () => submitNote(st, text) });
+  }
 }
 function drawPins() {
   const stage = $('stage');
   stage.querySelectorAll('.pin:not(.hot)').forEach(p => p.remove());
   const size = S.cache.size, sc = stageCanvas.getBoundingClientRect().width / size;
-  S.notes.forEach((note, i) => {
-    if (note.kind === 'ask' || note.frame !== S.frame || note.status === 'dismissed' || (note.size && note.size !== size)) return;
+  const own = S.notes.filter(n => n.kind !== 'ask');
+  own.forEach((note, i) => {
+    const near = Math.abs(note.frame - S.frame);
+    if (near > 2 || note.status === 'dismissed' || (note.size && note.size !== size)) return;
     stage.append(h('button', {
-      class: 'pin' + (note.author === 'claude' ? ' claude' : '') + (note.status === 'addressed' ? ' done' : '') + (S.hotNote === note.id ? ' hot' : ''),
+      class: 'pin' + (note.author === 'claude' ? ' claude' : '') + (note.status === 'addressed' ? ' done' : '') + (S.hotNote === note.id ? ' hot' : '') + (near ? ' near' : '') + (note.pending ? ' pending' : ''),
       style: `left:${note.x * sc}px;top:${note.y * sc}px`, title: note.text || (note.tags || []).join(', '),
-      onclick: () => { S.hotNote = note.id; switchTab('notes'); draw(); },
-    }, String(S.notes.length - i)));
+      onclick: () => { S.hotNote = note.id; setPlaying(false); setFrame(note.frame); switchTab('notes'); },
+    }, String(own.length - i)));
   });
+}
+// note markers on the timeline, so you can see notes exist while the effect plays
+function drawTicks() {
+  const t = $('ticks'); if (!t || !S.cur) return;
+  t.textContent = '';
+  const F = Math.max(2, S.cur.canvas.frames);
+  for (const n of S.notes) if (n.kind !== 'ask' && n.status !== 'dismissed') t.append(h('i', { class: n.status === 'addressed' ? 'done' : '', style: `left:${(Math.min(n.frame, F - 1) / (F - 1)) * 100}%` }));
 }
 
 // -------------------------------------------------------------- metrics
@@ -621,13 +653,21 @@ function renderTabs() {
   const pend = openProposals().length;
   $('cCount').textContent = pend; $('cCount').className = 'count' + (pend ? ' hot' : '');
   renderChoiceBar();
+  drawTicks();
   const body = $('tabBody'); body.textContent = '';
   ({ edit: tabEdit, colours: tabColours, notes: tabNotes, choices: tabChoices, refs: tabRefs, measure: tabMeasure, history: tabHistory })[S.tab](body);
 }
 function renderChoiceBar() {
   const bar = $('choiceBar'), open = openProposals();
   bar.textContent = '';
-  if (!open.length || (S.overlay && S.overlay.kind === 'compare')) { bar.hidden = true; return; }
+  if (S.overlay && S.overlay.kind === 'compare') { bar.hidden = true; return; }
+  if (!open.length) {
+    const lc = S.lastCompare;
+    if (!lc) { bar.hidden = true; return; }
+    bar.append(h('span', { class: 'dot claude' }), h('strong', { text: lc.title }), h('span', { class: 'muted', text: lc.picked ? `you chose ${lc.picked}` : 'no pick yet' }),
+      h('div', { class: 'spacer' }), h('button', { class: 'btn small', onclick: () => openCompare(lc) }, 'Show options again'));
+    bar.hidden = false; return;
+  }
   const p = open[0];
   bar.append(h('span', { class: 'dot claude' }), h('strong', { text: 'Claude asks: ' + (p.title || 'a choice') }),
     h('span', { class: 'muted', text: `${(p.options || []).length} options to compare side by side` + (open.length > 1 ? ` · ${open.length - 1} more waiting` : '') }),
@@ -787,7 +827,8 @@ function noteCard(n, idx) {
     n.tags && n.tags.length ? h('div', { class: 'chips' }, n.tags.map(t => h('span', { class: 'chip', text: t }))) : null,
     n.text ? h('div', { class: 'txt', text: n.text }) : null,
     n.reply ? h('div', { class: 'reply', text: n.reply }) : null);
-  if (S.db && !String(n.id).startsWith('local') && !isAsk) {
+  if (n.pending) card.append(h('div', { class: 'muted', text: 'Saving…' }));
+  if (S.db && !String(n.id).startsWith('local') && !n.pending && !isAsk) {
     card.append(h('div', { class: 'row' },
       n.status === 'open' ? h('button', { class: 'btn small', onclick: () => setNoteStatus(n, 'addressed') }, 'Mark resolved') : h('button', { class: 'btn small', onclick: () => setNoteStatus(n, 'open') }, 'Reopen'),
       h('button', { class: 'btn small ghost', onclick: () => setNoteStatus(n, 'dismissed') }, 'Dismiss')));
@@ -799,8 +840,9 @@ function tabNotes(body) {
   const rounds = (S.rounds || []).slice(-3).reverse();
   for (const r of rounds) body.append(h('div', { class: 'card claude' }, h('div', { class: 'meta' }, h('span', { class: 'dot claude' }), h('strong', { text: 'Claude · round' }), h('span', { text: ago(r.t || r.createdAt) })), h('div', { class: 'reply', text: r.message || '' })));
   body.append(h('div', { class: 'empty' }, 'Click anywhere on the preview to pin a note. It records the frame, the spot, which layers drew it and their settings, so Claude knows exactly what you mean.'));
-  if (!S.notes.some(n => n.status !== 'dismissed')) { body.append(h('div', { class: 'empty', text: 'No notes yet.' })); return; }
-  S.notes.forEach((n, i) => { if (n.status !== 'dismissed') body.append(noteCard(n, S.notes.length - i)); });
+  if (!S.notes.some(n => n.status !== 'dismissed' && n.kind !== 'ask')) { body.append(h('div', { class: 'empty', text: 'No notes yet. Your Ask Claude requests are listed under Choices.' })); return; }
+  const own = S.notes.filter(n => n.kind !== 'ask');
+  own.forEach((n, i) => { if (n.status !== 'dismissed') body.append(noteCard(n, own.length - i)); });
 }
 
 // ---------------------------------------------------------- Choices tab
@@ -816,7 +858,21 @@ function tabChoices(body) {
   for (const p of done) body.append(h('div', { class: 'card' },
     h('div', { class: 'meta' }, h('span', { class: 'dot ok' }), h('span', { text: p.title || 'Choice' }), h('span', { text: ago(p.pick && p.pick.at) })),
     h('div', { class: 'txt', text: p.pick && p.pick.key ? `You picked ${p.pick.key}` + (p.pick.comment ? `: ${p.pick.comment}` : '') : 'None fit' + (p.pick && p.pick.comment ? `: ${p.pick.comment}` : '') }),
-    h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: () => openProposal(p) }, 'View again'))));
+    h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: () => openProposal(p) }, 'Show options again'))));
+  const asks = S.notes.filter(n => n.kind === 'ask' && Array.isArray(n.options) && n.options.length);
+  if (asks.length) body.append(h('div', { class: 'sec' }, h('h3', { text: 'Your Ask Claude requests' })));
+  for (const a of asks) body.append(h('div', { class: 'card' },
+    h('div', { class: 'meta' }, h('span', { class: 'dot claude' }), h('span', { text: ago(a.createdAt) }), h('span', { text: a.picked ? `you chose ${a.picked}` : 'no pick' })),
+    h('div', { class: 'txt', text: a.text }), a.comment ? h('div', { class: 'reply', text: a.comment }) : null,
+    h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: () => openAsk(a) }, 'Show options again'),
+      a.base ? null : h('span', { class: 'muted', text: 'Shown on your current effect (this older request did not store its starting point).' }))));
+}
+function openAsk(a) {
+  const base = a.base ? FX.normalizeEffect(a.base) : S.cur;
+  openCompare({
+    title: 'Your ask: ' + String(a.text).slice(0, 80), question: a.reply ? String(a.reply).replace(/^Claude \(in page\): /, 'Claude understood: ') : '', picked: a.picked || undefined,
+    options: [{ key: 'A', label: 'Starting point', effect: base }].concat(a.options.map(o => ({ key: o.key, label: o.label, effect: FX.applyPatch(base, o.patch || {}) }))),
+  });
 }
 
 // ------------------------------------------------------------- Refs tab
@@ -908,13 +964,17 @@ function tabHistory(body) {
 // --------------------------------------------------- compare (variant grid)
 function openCompare(cfg) {
   closeOverlay(); closeComposer(); setPlaying(true);
+  S.lastCompare = cfg;
   const cells = cfg.options.map(o => ({ key: o.key, label: o.label, effect: o.effect, cache: { gen: 0, size: 64, groups: [], frames: [] }, canvas: h('canvas', { width: 1, height: 1 }) }));
   const ov = { kind: 'compare', cfg, cells, selected: null };
   const comment = h('input', { class: 'tin', placeholder: cfg.proposal ? 'Why this one? What would you change? (optional)' : 'Optional note', 'aria-label': 'Comment' });
   const useBtn = h('button', { class: 'btn primary', disabled: true, onclick: () => finishCompare(ov, comment.value) }, 'Pick one above');
+  const verb = cfg.picked ? 'Use ' : 'Choose ';
+  const select = (key, el) => { ov.selected = key; grid.querySelectorAll('.cell:not(.refcell)').forEach(x => x.setAttribute('aria-pressed', String(x === el))); useBtn.disabled = false; useBtn.textContent = verb + key; };
   const grid = h('div', { class: 'grid' }, cells.map(c => {
-    const el = h('button', { class: 'cell', 'aria-pressed': 'false', onclick: () => { ov.selected = c.key; grid.querySelectorAll('.cell:not(.refcell)').forEach(x => x.setAttribute('aria-pressed', String(x === el))); useBtn.disabled = false; useBtn.textContent = 'Choose ' + c.key; } },
-      c.canvas, h('div', { class: 'row' }, h('span', { class: 'k', text: c.key }), h('span', { class: 'cl', text: c.label })));
+    const el = h('button', { class: 'cell', 'aria-pressed': 'false', onclick: () => select(c.key, el) },
+      c.canvas, h('div', { class: 'row' }, h('span', { class: 'k', text: c.key }), h('span', { class: 'cl', text: c.label + (cfg.picked === c.key ? ' · your pick' : '') })));
+    c.el = el;
     return el;
   }));
   const ref = S.sideRef || S.refs[0];
@@ -928,6 +988,8 @@ function openCompare(cfg) {
     h('div', { class: 'ofoot gut' }, comment, useBtn, cfg.proposal ? h('button', { class: 'btn', onclick: () => finishCompare(ov, comment.value, true) }, 'None of these') : null));
   document.body.append(node);
   ov.node = node; S.overlay = ov; renderChoiceBar();
+  const pre = cells.find(c => c.key === cfg.picked);
+  if (pre) select(pre.key, pre.el);
   for (const c of cells) renderFrames(c.effect, c.cache, () => drawCompare());
 }
 function drawCompare() {
@@ -948,15 +1010,17 @@ async function finishCompare(ov, comment, none) {
     try { await item(cfg.proposal.id).update({ status: 'answered', pick: { key: cell ? cell.key : null, comment: comment || '', at: now() }, t: now() }); }
     catch (e) { toast('Could not save your pick: ' + (e.code || e.message)); return; }
   }
-  if (cfg.onPick) cfg.onPick(cell, comment);
-  if (cell) { S.cur = FX.normalizeEffect(clean(cell.effect)); edited(); toast(`Applied ${cell.key}. Save to keep it, or keep tweaking.`); }
-  else toast('Noted. Claude will see your comment.');
+  if (cfg.onPick && !cfg.picked) cfg.onPick(cell, comment);
+  cfg.picked = cell ? cell.key : null;
+  const again = { label: 'Show options again', run: () => openCompare(cfg) };
+  if (cell) { S.cur = FX.normalizeEffect(clean(cell.effect)); edited(); toast(`Applied ${cell.key}. Keep tweaking, or save a version.`, again); }
+  else toast('Noted. Claude will see your comment.', again);
   closeOverlay();
 }
 function openProposal(p) {
   const base = S.cur;
   openCompare({
-    title: p.title || 'Choice', question: p.question, proposal: p,
+    title: p.title || 'Choice', question: p.question, proposal: p, picked: p.status === 'answered' && p.pick ? p.pick.key : undefined,
     options: (p.options || []).map(o => ({ key: o.key, label: o.label || '', effect: o.effect ? FX.normalizeEffect(o.effect) : FX.applyPatch(base, o.patch || {}) })),
   });
 }
@@ -1066,7 +1130,7 @@ async function runAsk() {
       onPick: (cell, comment) => {
         const chosen = cell && opts.find(o => o.key === cell.key);
         addNote({ kind: 'ask', text: ask, reply: 'Claude (in page): ' + String(res.understood || ''), tags: ['asked claude'], picked: cell ? cell.key : null,
-          pickedLabel: chosen ? chosen.label : (cell ? 'Current' : 'none'), patch: chosen ? chosen.patch : null, comment: comment || '', options: opts,
+          pickedLabel: chosen ? chosen.label : (cell ? 'Current' : 'none'), patch: chosen ? chosen.patch : null, comment: comment || '', options: opts, base: started,
           baseVersion: S.baseVersion, status: 'addressed', author: 'you', createdAt: new Date().toISOString() }).catch(() => {});
       },
     });
@@ -1129,7 +1193,17 @@ async function sendRound(extra, saveFirst) {
 $('sendBtn').onclick = openSend;
 
 // ------------------------------------------------------- edits and saving
-function edited() { renderTabs(); rerender(); updateHeader(); }
+function edited() { renderTabs(); rerender(); updateHeader(); scheduleDraft(); }
+// The working copy is saved as one "draft" item a couple of seconds after each edit, so
+// unsaved work survives a reload and Claude sees what you were doing even before you save.
+let draftTimer = 0;
+function scheduleDraft() { if (!S.db || !S.itemsLoaded) return; clearTimeout(draftTimer); draftTimer = setTimeout(saveDraft, 2000); }
+async function saveDraft() {
+  const d = changes(), had = S.draft && S.draft.changes && S.draft.changes.length;
+  if (!d.length && !had) return;
+  const doc = { kind: 'draft', author: 'you', baseVersion: S.baseVersion, effect: d.length ? clean(S.cur) : null, changes: d.slice(0, 200), t: now() };
+  try { await item('draft').set(doc); S.draft = doc; } catch (e) {}
+}
 function updateHeader() {
   const n = changes().length;
   const pill = $('verPill'); pill.textContent = '';
@@ -1164,6 +1238,8 @@ async function saveVersion(message) {
     if (existing.exists) { toast(`v${v} was just saved elsewhere. Your edits are kept; save again to make v${v + 1}.`); S.saving = false; $('saveGo').disabled = false; return false; }
     await item(id).set(Object.assign({ kind: 'version', t: doc.savedAt }, doc));
     adoptBase(doc, true); ok = true;
+    S.draft = { kind: 'draft', author: 'you', baseVersion: v, effect: null, changes: [], t: now() };
+    item('draft').set(S.draft).catch(() => {});
   } catch (e) { toast('Save failed: ' + (e.code || e.message)); }
   S.saving = false; $('saveGo').disabled = false;
   return ok;
@@ -1230,6 +1306,19 @@ $('speed').onchange = e => { S.speed = +e.target.value; };
 $('loopChk').onchange = e => { S.loop = e.target.checked; };
 $('zoom').value = S.zoom;
 $('zoom').onchange = e => { S.zoom = e.target.value; store.set('zoom', S.zoom); layoutStage(); };
+// On narrow screens the pinned preview steps aside while you type, and sheets ride above the keyboard.
+const TYPING = 'input:not([type]), input[type="text"], input[type="number"], textarea';
+document.addEventListener('focusin', e => {
+  if (window.innerWidth >= 900 || !e.target.matches || !e.target.matches(TYPING) || e.target.closest('.composer, .overlay')) return;
+  document.body.classList.add('typing');
+  setTimeout(() => e.target.scrollIntoView({ block: 'center', behavior: 'instant' }), 300);
+});
+document.addEventListener('focusout', () => setTimeout(() => { const a = document.activeElement; if (!a || !a.matches || !a.matches(TYPING)) document.body.classList.remove('typing'); }, 150));
+if (window.visualViewport) {
+  const vv = window.visualViewport;
+  const kb = () => document.documentElement.style.setProperty('--kb', Math.max(0, window.innerHeight - vv.height - vv.offsetTop) + 'px');
+  vv.addEventListener('resize', kb); vv.addEventListener('scroll', kb);
+}
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') { closeComposer(); closeOverlay(); return; }
   if (e.target.closest('input, textarea, select')) return;
@@ -1274,6 +1363,7 @@ async function boot() {
     if (S.propsLoaded && openProposals().length > before) toast('Claude posted a choice for you');
     S.refs = all.filter(i => i.kind === 'ref' && ASSET_RE.test(String(i.assetId || ''))).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     S.versions = all.filter(i => i.kind === 'version').sort((a, b) => b.version - a.version);
+    S.draft = all.find(i => i.kind === 'draft') || null;
     const last = replies[replies.length - 1];
     if (last && tOf(last) > seenReply) {
       seenReply = tOf(last); store.set('reply.' + EID, seenReply);
@@ -1293,6 +1383,15 @@ async function boot() {
         banner([h('strong', { text: `${d.savedBy === 'claude' ? 'Claude' : 'Someone'} saved v${d.version}` }), h('span', { class: 'muted', text: d.message || '' }), h('div', { class: 'spacer' }),
           h('button', { class: 'btn small primary', onclick: () => { adoptBase(S.remotePending); S.remotePending = null; banner(null); } }, `Load v${d.version} (drops your edits)`),
           h('button', { class: 'btn small', onclick: () => { const keep = S.cur; adoptBase(S.remotePending, true); S.cur = keep; S.remotePending = null; banner(null); edited(); } }, 'Keep my edits on top')]);
+      }
+    }
+    if (!q.metadata.fromCache && !S.itemsLoaded) {
+      S.itemsLoaded = true;
+      const dr = S.draft;
+      if (dr && dr.effect && (dr.changes || []).length && dr.baseVersion === S.baseVersion && !changes().length) {
+        banner([h('strong', { text: 'Unsaved edits found' }), h('span', { class: 'muted', text: `${dr.changes.length} change${dr.changes.length > 1 ? 's' : ''} on v${dr.baseVersion}, ${ago(dr.t)}` }), h('div', { class: 'spacer' }),
+          h('button', { class: 'btn small primary', onclick: () => { S.cur = FX.normalizeEffect(dr.effect); edited(); banner(null); } }, 'Restore them'),
+          h('button', { class: 'btn small', onclick: () => { banner(null); S.cur = FX.normalizeEffect(S.base); saveDraft(); } }, 'Discard')]);
       }
     }
     renderTabs(); drawPins();

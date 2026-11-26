@@ -217,6 +217,8 @@
         P('cooling', 'Cooling', 'num', 0.8, { min: 0, max: 1.5, step: 0.01, group: LOOK, help: 'How fast plumes cool toward red over their life.' }),
         P('erosion', 'Erosion', 'num', 0.5, { min: 0, max: 1, step: 0.01, group: LOOK, help: 'How strongly plumes break into tongues and wisps as they age.' }),
         P('noiseScale', 'Noise scale', 'num', 3.5, { min: 0.5, max: 10, step: 0.1, group: LOOK }),
+        P('connect', 'Connected mass', 'num', 0, { min: 0, max: 1, step: 0.01, group: LOOK, help: '0 = separate plumes. 1 = plumes fuse into one mass with a single outer edge.' }),
+        P('fuse', 'Fuse strength', 'num', 1.6, { min: 0.3, max: 4, step: 0.05, group: LOOK, help: 'Connected mode: how readily thin overlapping areas fill in.' }),
         P('colorCore', 'Core', 'color', 'white', { group: COLOR }),
         P('colorHot', 'Hot', 'color', 'hot', { group: COLOR }),
         P('colorMid', 'Mid', 'color', 'mid', { group: COLOR }),
@@ -446,11 +448,17 @@
     const k = (t - pos[i]) / (pos[i + 1] - pos[i]), a = stops[i], b = stops[i + 1];
     return [lerp(a[0], b[0], k), lerp(a[1], b[1], k), lerp(a[2], b[2], k)];
   }
+  // Fire: plumes of noisy density coloured by a heat ramp. With connect > 0 every plume also
+  // feeds one shared density + heat field, coloured once, so plumes fuse into a single mass
+  // with one outer edge instead of reading as overlapping balls. connect blends the two.
   RENDER.fire = function (effect, layer, p, ctx, buf) {
     const list = spawnList(effect, layer, p, ctx);
     const stops = [p.colorEdge, p.colorCool, p.colorMid, p.colorHot, p.colorCore].map(c => slot(ctx, c));
     const seed = strHash(layer.id) & 0xffff;
-    const S = ctx.size, add = layer.blend === 'add';
+    const S = ctx.size, N = S * S, add = layer.blend === 'add';
+    const connect = Math.max(0, Math.min(1, p.connect || 0));
+    // shared-field accumulators: weight, weighted body, weighted heat, weighted erosion
+    const Wf = connect > 0 ? new Float32Array(N) : null, Bf = Wf && new Float32Array(N), Hf = Wf && new Float32Array(N), Ef = Wf && new Float32Array(N);
     for (const s of list) {
       const age = ctx.frame - s.birth;
       if (age < 0 || age > s.life) continue;
@@ -472,12 +480,37 @@
           const shape = 1 - smoothstep(0.25, 1, d);
           const n = fbm(dx * ns + s.ox, dy * ns + s.oy - lt * 1.2, seed);
           const body = shape * (0.25 + 1.25 * n);
-          const dens = smoothstep(thr, thr + 0.28, body);
-          const a = A * dens;
-          if (a <= 0.002) continue;
-          const c = heatColor(stops, T0 * Math.pow(Math.min(1.4, body), 1.4));
-          put(buf, (py * S + px) * 4, c[0], c[1], c[2], a, add);
+          if (Wf) {
+            // shared field: smooth weight (no per-plume edge); body, heat and erosion are averaged
+            const w = A * (1 - d * d), k = py * S + px;
+            Wf[k] += w; Bf[k] += w * body; Hf[k] += w * T0; Ef[k] += w * thr;
+          }
+          if (connect < 1) {
+            const dens = smoothstep(thr, thr + 0.28, body);
+            const a = A * dens * (1 - connect);
+            if (a <= 0.002) continue;
+            const c = heatColor(stops, T0 * Math.pow(Math.min(1.4, body), 1.4));
+            put(buf, (py * S + px) * 4, c[0], c[1], c[2], a, add);
+          }
         }
+      }
+    }
+    if (Wf) {
+      // world-space billows drifting outward over time keep lanes and pockets inside the mass
+      const ns2 = (p.noiseScale * 0.8) / ctx.R, tt = ctx.frame / Math.max(1, effect.canvas.frames);
+      for (let k = 0; k < N; k++) {
+        const w = Wf[k];
+        if (w <= 1e-4) continue;
+        const px = (k % S) + 0.5 - ctx.cx, py = Math.floor(k / S) + 0.5 - ctx.cy;
+        const zoom = 1 / (1 + tt * 1.6); // the billow pattern expands outward over the effect's life
+        const wn = fbm(px * ns2 * zoom + 13, py * ns2 * zoom + 7, seed + 99);
+        const cover = 1 - Math.exp(-w * p.fuse);
+        const b2 = (Bf[k] / w) * (0.55 + 0.9 * wn);
+        const thr = (Ef[k] / w) * 0.6;
+        const a = connect * smoothstep(0.04, 0.35, cover) * smoothstep(thr, thr + 0.3, b2);
+        if (a <= 0.002) continue;
+        const c = heatColor(stops, (Hf[k] / w) * Math.pow(Math.min(1.4, b2 * (0.4 + 0.6 * cover)), 1.3));
+        put(buf, k * 4, c[0], c[1], c[2], a, add);
       }
     }
   };
