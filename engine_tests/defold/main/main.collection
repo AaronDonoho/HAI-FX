@@ -1,0 +1,7 @@
+name: "main"
+scale_along_z: 0
+instances {
+  id: "fx"
+  prototype: "/main/fx.go"
+  position { x: 128.0 y: 128.0 z: 0.0 }
+}

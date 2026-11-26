@@ -1,0 +1,8 @@
+# engine build outputs and captured frames
+engine_tests/defold/bundle/
+engine_tests/defold/build/
+engine_tests/defold/.internal/
+engine_tests/godot/.godot/
+engine_tests/out*/
+engine_tests/dfo_*/
+engine_tests/*.png

@@ -1,0 +1,22 @@
+-- Deterministic frame capture: the engine steps at a fixed 1/30 s. During update N
+-- the previous frame (N-1) is on screen, so we grab it synchronously before continuing.
+local FRAMES = tonumber(sys.get_config_string("hai.frames", "24"))
+function init(self)
+	self.n = 0
+	self.out = sys.get_config_string("hai.out", "/tmp/defold_frames")
+	local bg = sys.get_config_string("hai.bg", "black")
+	local c = (bg == "white") and vmath.vector4(1, 1, 1, 1) or vmath.vector4(0, 0, 0, 1)
+	msg.post("@render:", "clear_color", { color = c })
+	os.execute("mkdir -p " .. self.out)
+end
+function update(self, dt)
+	self.n = self.n + 1
+	if self.n == 1 then particlefx.play("#sparks", function(self, id, emitter, state) print("pfx state", emitter, state) end) end
+	if self.n >= 2 then
+		local f = string.format("%s/f_%03d.png", self.out, self.n - 2)
+		os.execute("ffmpeg -loglevel error -y -f x11grab -draw_mouse 0 -video_size 256x256 -i " .. os.getenv("DISPLAY") .. " -frames:v 1 " .. f)
+	end
+	if self.n > FRAMES then
+		msg.post("@system:", "exit", { code = 0 })
+	end
+end

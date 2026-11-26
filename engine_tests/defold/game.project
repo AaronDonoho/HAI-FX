@@ -1,0 +1,18 @@
+[project]
+title = hai_fx_render_test
+
+[bootstrap]
+main_collection = /main/main.collectionc
+
+[display]
+width = 256
+height = 256
+high_dpi = 0
+vsync = 0
+update_frequency = 30
+
+[physics]
+type = 2D
+
+[input]
+game_binding = /builtins/input/all.input_bindingc
