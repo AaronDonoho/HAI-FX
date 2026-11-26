@@ -1,0 +1,48 @@
+{
+  "id": "gears",
+  "name": "Gears",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 48,
+    "fps": 30,
+    "frames": 48,
+    "mode": "smooth",
+    "dither": true,
+    "alphaCut": 0.5,
+    "loop": true,
+    "tile": false
+  },
+  "palette": {
+    "metal": "#c49a5a",
+    "metalDark": "#4a3a26",
+    "metalLight": "#fff1c9"
+  },
+  "layers": [
+    {
+      "id": "gears",
+      "type": "gears",
+      "label": "Gear train",
+      "params": {
+        "teethC": 12,
+        "teethA": 16,
+        "teethB": 8,
+        "module": 0.05,
+        "angleB": 0,
+        "angleC": 60,
+        "x": -0.35,
+        "y": -0.1,
+        "spokes": 4
+      }
+    }
+  ],
+  "checks": [
+    {
+      "id": "loop",
+      "label": "Loops seamlessly",
+      "metric": "loopJump",
+      "op": "<=",
+      "value": 1.5
+    }
+  ]
+}

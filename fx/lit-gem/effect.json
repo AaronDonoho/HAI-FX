@@ -1,0 +1,42 @@
+{
+  "id": "lit-gem",
+  "name": "Lit gem",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 48,
+    "fps": 30,
+    "frames": 36,
+    "mode": "smooth",
+    "dither": true,
+    "alphaCut": 0.5,
+    "loop": true,
+    "tile": false
+  },
+  "palette": {
+    "white": "#ffffff",
+    "ambient": "#3a4a7a"
+  },
+  "layers": [
+    {
+      "id": "gem",
+      "type": "shade",
+      "label": "Gem",
+      "params": {
+        "source": "gem",
+        "orbit": 1,
+        "specular": 0.8,
+        "rim": 0.5
+      }
+    }
+  ],
+  "checks": [
+    {
+      "id": "loop",
+      "label": "Loops seamlessly",
+      "metric": "loopJump",
+      "op": "<=",
+      "value": 1.5
+    }
+  ]
+}

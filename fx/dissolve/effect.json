@@ -1,0 +1,34 @@
+{
+  "id": "dissolve",
+  "name": "Dissolve",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 48,
+    "fps": 30,
+    "frames": 30,
+    "mode": "smooth",
+    "dither": true,
+    "alphaCut": 0.5,
+    "loop": false,
+    "tile": false
+  },
+  "palette": {
+    "white": "#ffffff",
+    "arc": "#7fd4ff"
+  },
+  "layers": [
+    {
+      "id": "crate",
+      "type": "sprite",
+      "label": "Crate",
+      "params": {
+        "source": "crate",
+        "dissolveFrom": 0,
+        "dissolveTo": 1,
+        "edge": 0.1
+      }
+    }
+  ],
+  "checks": []
+}

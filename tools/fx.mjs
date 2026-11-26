@@ -15,6 +15,7 @@ import { execSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import pngjs from 'pngjs';
+import { openEngine, sourcesBeside } from './engine.mjs';
 
 const { PNG } = pngjs;
 const require = createRequire(import.meta.url);
@@ -64,11 +65,12 @@ function packSheet(frames, size) {
 const sh = (cmd, o = {}) => String(execSync(cmd, Object.assign({ stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 1 << 26 }, o)) || '');
 
 // ------------------------------------------------------------------- render
-function render(effect, outDir) {
+let E = null;
+async function render(effect, outDir) {
   const e = FX.normalizeEffect(effect);
   const id = e.id || 'effect';
   fs.mkdirSync(outDir, { recursive: true });
-  const ex = FX.exportPasses(e);
+  const ex = await E.call('exportPasses', e);
   const S = ex.size, pixel = e.canvas.mode === 'pixel';
   const atlas = { meta: { effect: id, size: S, fps: ex.fps, frames: ex.frameCount, mode: e.canvas.mode, generator: 'hai-fx' }, passes: [] };
 
@@ -85,11 +87,11 @@ function render(effect, outDir) {
 
   // Review sheet: every frame over the studio's dark background, with frame numbers in the filename order.
   const prev = [];
-  for (let f = 0; f < e.canvas.frames; f++) prev.push(FX.renderFrame(e, f, { bg: '#14121a' }).data);
+  for (let f = 0; f < e.canvas.frames; f++) prev.push((await E.call('renderFrame', e, f, { bg: '#14121a' })).data);
   const ps = packSheet(prev, S);
   writePng(path.join(outDir, `${id}_review.png`), ps.W, ps.H, ps.data);
 
-  const metrics = FX.measure(e);
+  const metrics = await E.call('measure', e);
   fs.writeFileSync(path.join(outDir, `${id}.metrics.json`), JSON.stringify(metrics, null, 2));
 
   exportGodot(e, atlas, outDir, pixel);
@@ -343,10 +345,10 @@ function cropCaptures(dir, S) {
 // Compare captured engine frames with the preview over black.
 // Two separate questions: does each frame LOOK right (content error against the preview
 // frame it shows), and is the right frame shown at the right time (timing slips)?
-function compare(e, capDir) {
+async function compare(e, capDir) {
   const F = e.canvas.frames;
   const ref = [];
-  for (let f = 0; f < F; f++) ref.push(FX.renderFrame(e, f, { bg: [0, 0, 0] }).data);
+  for (let f = 0; f < F; f++) ref.push((await E.call('renderFrame', e, f, { bg: [0, 0, 0] })).data);
   const caps = fs.readdirSync(capDir).filter(f => f.endsWith('.png')).sort().map(f => readPng(path.join(capDir, f)));
   const err = (a, b) => {
     let s = 0, mx = 0;
@@ -377,11 +379,11 @@ function compare(e, capDir) {
   return { offset, mean, rows, slips };
 }
 
-function verify(effect, opts) {
+async function verify(effect, opts) {
   const e = FX.normalizeEffect(effect);
   const id = e.id || 'effect';
   const outDir = path.join(ROOT, 'build', id + (e.canvas.mode === 'pixel' ? '_pixel' : ''));
-  render(effect, outDir);
+  await render(effect, outDir);
   const engines = (opts.engines || 'godot,defold').split(',');
   const report = { effect: id, mode: e.canvas.mode, engines: {} };
   for (const eng of engines) {
@@ -389,7 +391,7 @@ function verify(effect, opts) {
     const t0 = Date.now();
     try {
       const cap = eng === 'godot' ? verifyGodot(e, outDir, work) : verifyDefold(e, outDir, work);
-      const cmp = compare(e, cap);
+      const cmp = await compare(e, cap);
       report.engines[eng] = {
         ok: !!cmp, seconds: +((Date.now() - t0) / 1000).toFixed(1), frameOffset: cmp && cmp.offset, timingSlips: cmp && cmp.slips, maxPixelError: cmp && Math.max(...cmp.rows.map(r => r.max)),
         contentError: cmp && +cmp.mean.toFixed(2),
@@ -410,14 +412,21 @@ if (!cmd || !file) {
   process.exit(1);
 }
 const effect = loadEffect(file, opts);
-if (cmd === 'render') {
-  const e = FX.normalizeEffect(effect);
-  const out = opts.out || path.join(ROOT, 'build', (e.id || 'effect') + (e.canvas.mode === 'pixel' ? '_pixel' : ''));
-  const t0 = Date.now();
-  const { atlas, metrics } = render(effect, out);
-  console.log(JSON.stringify({ out, ms: Date.now() - t0, passes: atlas.passes.map(p => p.image), summary: metrics.summary, checks: metrics.checks.map(c => `${c.pass ? 'PASS' : 'FAIL'} ${c.label} (${c.actual})`) }, null, 2));
-} else if (cmd === 'metrics') {
-  console.log(JSON.stringify(FX.measure(effect), null, 2));
-} else if (cmd === 'verify') {
-  console.log(JSON.stringify(verify(effect, opts), null, 2));
-}
+(async () => {
+  E = await openEngine({ pages: 1 });
+  const srcs = sourcesBeside(file);
+  if (opts.sources) for (const f of fs.readdirSync(opts.sources)) if (/\.png$/i.test(f)) srcs[f.replace(/\.png$/i, '')] = 'data:image/png;base64,' + fs.readFileSync(path.join(opts.sources, f)).toString('base64');
+  await E.setSources(srcs);
+  if (cmd === 'render') {
+    const e = FX.normalizeEffect(effect);
+    const out = opts.out || path.join(ROOT, 'build', (e.id || 'effect') + (e.canvas.mode === 'pixel' ? '_pixel' : ''));
+    const t0 = Date.now();
+    const { atlas, metrics } = await render(effect, out);
+    console.log(JSON.stringify({ out, ms: Date.now() - t0, passes: atlas.passes.map(p => p.image), summary: metrics.summary, checks: metrics.checks.map(c => `${c.pass ? 'PASS' : 'FAIL'} ${c.label} (${c.actual})`) }, null, 2));
+  } else if (cmd === 'metrics') {
+    console.log(JSON.stringify(await E.call('measure', effect), null, 2));
+  } else if (cmd === 'verify') {
+    console.log(JSON.stringify(await verify(effect, opts), null, 2));
+  }
+  await E.close();
+})().catch(async e => { console.error(e.stack || e); if (E) await E.close(); process.exit(1); });

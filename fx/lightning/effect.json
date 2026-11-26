@@ -1,0 +1,57 @@
+{
+  "id": "lightning",
+  "name": "Lightning",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 48,
+    "fps": 30,
+    "frames": 24,
+    "mode": "smooth",
+    "dither": true,
+    "alphaCut": 0.5,
+    "loop": true,
+    "tile": false
+  },
+  "palette": {
+    "white": "#ffffff",
+    "arc": "#7fd4ff",
+    "arcDeep": "#3a6bff"
+  },
+  "layers": [
+    {
+      "id": "bolt",
+      "type": "electric",
+      "label": "Main bolt",
+      "params": {
+        "hold": 3,
+        "branches": 3
+      }
+    },
+    {
+      "id": "bolt2",
+      "type": "electric",
+      "label": "Second bolt",
+      "params": {
+        "hold": 2,
+        "jag": 0.12,
+        "freq": 14,
+        "branches": 1,
+        "thick": 0.006,
+        "glow": 0.03,
+        "glowAmt": 0.5,
+        "ay": -0.15,
+        "by": 0.1
+      }
+    }
+  ],
+  "checks": [
+    {
+      "id": "loop",
+      "label": "Loops seamlessly",
+      "metric": "loopJump",
+      "op": "<=",
+      "value": 1.5
+    }
+  ]
+}

@@ -50,6 +50,13 @@ Other common sprite tasks the same pieces should cover:
 The Studio, rounds, metrics, matching and search carry over unchanged: new layer types bring their own
 parameters, metrics and checks.
 
+## Status
+- Done: GPU layer track (WebGL2, shared by Studio and tools), sprite inputs, layers that read the
+  composite below, seamless loop/tile flags with seam metrics, multi-effect Studio with templates, and
+  first generators: electricity, waveform, water, clouds, gears, sprite status effects, outline,
+  lighting from sprites, weathering, ripple, reflection. Baked sprite-sheet export works for all of them.
+- Next: runtime shader export (Godot `.gdshader`, Defold `.fp`) with engine verification; path tracing.
+
 ## Proposed order
 1. GPU layer track + runtime shader export, proven end to end on one effect in both engines.
 2. Input sprites + image operations: outline on contrast, normal maps and lighting, reflections, aging.

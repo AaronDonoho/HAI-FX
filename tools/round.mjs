@@ -41,8 +41,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import pngjs from 'pngjs';
+import { openEngine } from './engine.mjs';
 
 const { PNG } = pngjs;
 const require = createRequire(import.meta.url);
@@ -51,69 +51,11 @@ const ROOT = path.resolve(HERE, '..');
 const FX = require(path.join(ROOT, 'core/fxcore.js'));
 const OUT = path.join(ROOT, 'build', 'round');
 
-// ---------------------------------------------------------------- scoring
-const SCALE = { peakFrame: 3, startFrame: 3, fadeFrame: 3, peakEnergy: 400, maxRadius: 0.12, maxCoverage: 0.06, maxOverdraw: 0.8, orphanPixels: 40 };
-function violation(t, v) {
-  if (v === undefined || v === null) return 1;
-  const s = SCALE[t.metric] || 1;
-  if (t.op === '>=' || t.op === '>') return Math.max(0, t.value - v) / s;
-  if (t.op === '<=' || t.op === '<') return Math.max(0, v - t.value) / s;
-  return Math.abs(v - t.value) / s;
-}
-function lowres(effect) {
-  const e = FX.normalizeEffect(effect);
-  if (e.canvas.mode !== 'pixel') e.canvas.size = 64;
-  return e;
-}
-// Measure an effect against targets and reference descriptors.
-function evaluate(effect, ctx) {
-  const e = ctx.lowres ? lowres(effect) : effect;
-  const m = FX.measure(e, { keepFrames: ctx.refDescs.length > 0 });
-  let viol = 0;
-  const targets = ctx.targets.map(t => {
-    const v = FX.metricValue(m.summary, t), d = violation(t, v);
-    viol += (t.weight === undefined ? 1 : t.weight) * d;
-    return { label: (t.layer ? t.layer + '.' : '') + t.metric + t.op + t.value, actual: v, ok: d === 0 };
-  });
-  let match = null;
-  if (ctx.refDescs.length) {
-    m.frames.forEach((fr, f) => {
-      const d = FX.describeImage(fr, m.size, m.size);
-      if (!d) return;
-      const cs = ctx.refDescs.map(rd => FX.compareDescriptors(d, rd, ctx.aspects));
-      const avg = {};
-      for (const k of Object.keys(cs[0])) avg[k] = +(cs.reduce((s, c) => s + c[k], 0) / cs.length).toFixed(3);
-      if (!match || avg.overall > match.overall) match = Object.assign(avg, { frame: f });
-    });
-  }
-  const score = viol + (match ? ctx.matchWeight * (1 - match.overall) * 4 : 0);
-  return { summary: m.summary, targets, viol: +viol.toFixed(3), match, score: +score.toFixed(4) };
-}
-
-// ------------------------------------------------------------ worker pool
-if (!isMainThread) {
-  const ctx = workerData;
-  parentPort.on('message', ({ id, effect }) => {
-    try { parentPort.postMessage({ id, r: evaluate(effect, ctx) }); }
-    catch (e) { parentPort.postMessage({ id, error: String(e && e.stack || e) }); }
-  });
-}
-function pool(ctx, n) {
-  const workers = Array.from({ length: n }, () => new Worker(fileURLToPath(import.meta.url), { workerData: ctx }));
-  let next = 0;
-  const waiting = new Map();
-  for (const w of workers) w.on('message', m => { const cb = waiting.get(m.id); waiting.delete(m.id); cb(m); });
-  return {
-    run(effects) {
-      return Promise.all(effects.map((effect, i) => new Promise((res, rej) => {
-        const id = next++;
-        waiting.set(id, m => (m.error ? rej(new Error(m.error)) : res(m.r)));
-        workers[i % workers.length].postMessage({ id, effect });
-      })));
-    },
-    close() { workers.forEach(w => w.terminate()); },
-  };
-}
+// Rendering, measuring and scoring run inside the browser engine (CPU + GPU layers, same code
+// as the Studio). E is opened once per command; searches spread over its pages.
+let E = null;
+async function engine(pages) { if (!E) E = await openEngine({ pages: pages || 1 }); return E; }
+const evaluate = (effect, ctx) => E.call('evaluate', effect, ctx);
 
 // --------------------------------------------------------------- loading
 function args() {
@@ -143,6 +85,7 @@ function loadState(dump, eid) {
     lastClaudeVersion: [...versions].reverse().find(byClaude),
     notes: of('note').sort((a, b) => tOf(a).localeCompare(tOf(b))),
     asks: of('ask'), proposals: of('proposal'), refs: of('ref'), replies, replied, resolved, isNew, lastClaudeT,
+    sources: Object.fromEntries(of('source').filter(i => /^data:image\//.test(i.data || '')).map(i => [i.sid || i.id, i.data])),
   };
 }
 function versionEffect(st, n) { const v = st.versions.find(x => x.version === n); return v ? v.effect : null; }
@@ -178,13 +121,14 @@ function loadRefs(st) {
 // ---------------------------------------------------------- images + html
 function pngData(rgba, w, h) { const p = new PNG({ width: w, height: h }); p.data = Buffer.from(rgba.buffer ? new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength) : rgba); return 'data:image/png;base64,' + PNG.sync.write(p).toString('base64'); }
 const esc = s => String(s === undefined || s === null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-function frameImg(effect, f, opts = {}) {
-  const r = FX.renderFrame(effect, f, { bg: opts.bg || '#000000', only: opts.only });
-  return { src: pngData(r.data, r.size, r.size), size: r.size };
+async function frameImg(effect, f, opts = {}) {
+  const e = FX.normalizeEffect(effect);
+  return { src: await E.frameURL(effect, f, { bg: opts.bg || '#000000', only: opts.only }), size: e.canvas.mode === 'pixel' ? e.canvas.pixelSize : e.canvas.size };
 }
-function strip(effect, frames, opts = {}) {
-  const px = opts.px || 128;
-  return `<div class="strip">${frames.map(f => { const im = frameImg(effect, f, opts); return `<figure><img src="${im.src}" style="width:${px}px;height:${px}px"><figcaption>f${f}</figcaption></figure>`; }).join('')}</div>`;
+async function strip(effect, frames, opts = {}) {
+  const px = opts.px || 128, figs = [];
+  for (const f of frames) { const im = await frameImg(effect, f, opts); figs.push(`<figure><img src="${im.src}" style="width:${px}px;height:${px}px"><figcaption>f${f}</figcaption></figure>`); }
+  return `<div class="strip">${figs.join('')}</div>`;
 }
 function sparkSvg(series, w = 300, h = 70) {
   const colors = ['#ffcf5c', '#57d1c0', '#ef6a5a', '#c9a6ff', '#6fd08c', '#f2b84b', '#8ab4ff'];
@@ -206,15 +150,11 @@ figcaption{font:11px monospace;color:#9c98ab}.row{display:flex;gap:14px;align-it
 .notes{display:flex;flex-wrap:wrap;gap:10px}.pinwrap{position:relative;flex:none}.pinwrap img{display:block;image-rendering:pixelated}
 .pin{position:absolute;width:16px;height:16px;border:2px solid #fff;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 0 1px #000}
 .refs{display:flex;gap:10px}.refs img{height:150px;border:1px solid #2d2b37}.legend{font:11px monospace;margin-top:2px}.small{color:#9c98ab;font-size:12px}`;
-function shoot(html, file) {
-  const pw = require('playwright');
-  return (async () => {
-    const b = await pw.chromium.launch();
-    const p = await b.newPage({ viewport: { width: 1500, height: 900 }, deviceScaleFactor: 1 });
-    await p.setContent(`<!doctype html><meta charset="utf-8"><style>${CSS}</style><body>${html}</body>`);
-    await p.screenshot({ path: file, fullPage: true });
-    await b.close();
-  })();
+async function shoot(html, file) {
+  const p = await E.browser.newPage({ viewport: { width: 1500, height: 900 }, deviceScaleFactor: 1 });
+  await p.setContent(`<!doctype html><meta charset="utf-8"><style>${CSS}</style><body>${html}</body>`);
+  await p.screenshot({ path: file, fullPage: true });
+  await p.close();
 }
 const fmtMatch = m => (m ? `match ${m.overall} @f${m.frame} (col ${m.colour} vol ${m.volume} shape ${m.shape} deb ${m.debris})` : '');
 const fmtSum = s => `peak f${s.peakFrame} start f${s.startFrame} fade f${s.fadeFrame} r${s.maxRadius} cov ${Math.round(s.maxCoverage * 100)}%`;
@@ -248,7 +188,7 @@ async function inspect(st, refs) {
   for (const n of open) {
     lines.push(`NOTE ${n.id} f${n.frame} (${n.x},${n.y})/${n.size} on v${n.baseVersion}${(n.unsaved || []).length ? '+' + n.unsaved.length + ' edits' : ''} layer=${n.layer} hits=${(n.hits || []).map(h => h.id + ':' + Math.round(h.share * 100) + '%').join(',')} tags=[${(n.tags || []).join(', ')}] "${n.text || ''}"${st.replied[n.id] ? ' (replied before)' : ''}`);
   }
-  const ev = evaluate(e, { targets: [], refDescs: refs.map(r => r.desc).filter(Boolean), aspects: null, matchWeight: 1 });
+  const ev = await evaluate(e, { targets: [], refDescs: refs.map(r => r.desc).filter(Boolean), matchWeight: 1 });
   lines.push(`METRICS ${fmtSum(ev.summary)}`);
   for (const [id, s] of Object.entries(ev.summary.layers)) lines.push(`  ${id}: ${fmtSum(s)}`);
   const checks = FX.evaluateChecks(FX.normalizeEffect(e), ev.summary);
@@ -257,28 +197,31 @@ async function inspect(st, refs) {
     lines.push(`REF ${r.id} "${r.caption}" desc bands=${JSON.stringify(r.desc && r.desc.bands)} fill=${r.desc && r.desc.fill} lobes=${r.desc && r.desc.lobes} rough=${r.desc && r.desc.rough}`);
   }
   if (ev.match) lines.push(`CURRENT vs refs: ${fmtMatch(ev.match)}`);
+  if (ev.summary.loopJump !== undefined || ev.summary.tileSeam !== undefined) lines.push(`SEAMS loopJump=${ev.summary.loopJump} tileSeam=${ev.summary.tileSeam} (1 = seamless)`);
+  const srcIds = Object.keys(st.sources);
+  if (srcIds.length) lines.push(`SPRITES ${srcIds.join(', ')}`);
 
   // review image
-  const m = FX.measure(e);
+  const m = await E.call('measure', e);
   let html = `<h1>${esc(st.eid)} · v${cur.version} by ${esc(who(cur))}</h1><div class="small">${esc(cur.message || '')}</div>`;
-  html += `<h2>Current v${cur.version}</h2>${strip(e, frames)}`;
-  if (lc && lc.version !== cur.version) html += `<h2>Before: Claude's v${lc.version}</h2>${strip(lc.effect, frames)}`;
-  if (st.draft) html += `<h2>Unsaved draft on v${st.draft.baseVersion} (${st.draft.changes.length} changes)</h2>${strip(st.draft.effect, frames)}`;
+  html += `<h2>Current v${cur.version}</h2>${await strip(e, frames)}`;
+  if (lc && lc.version !== cur.version) html += `<h2>Before: Claude's v${lc.version}</h2>${await strip(lc.effect, frames)}`;
+  if (st.draft) html += `<h2>Unsaved draft on v${st.draft.baseVersion} (${st.draft.changes.length} changes)</h2>${await strip(st.draft.effect, frames)}`;
   html += `<h2>Each layer alone</h2>`;
   for (const l of FX.normalizeEffect(e).layers.filter(l => l.enabled)) {
-    html += `<div class="row"><div class="lbl"><b>${esc(l.label)}</b> <span class="small">${l.type} · ${l.blend}</span><div class="m">${esc(fmtSum(ev.summary.layers[l.id] || {}))}</div></div>${strip(e, frames, { only: [l.id], px: 96 })}</div>`;
+    html += `<div class="row"><div class="lbl"><b>${esc(l.label)}</b> <span class="small">${l.type} · ${l.blend}</span><div class="m">${esc(fmtSum(ev.summary.layers[l.id] || {}))}</div></div>${await strip(e, frames, { only: [l.id], px: 96 })}</div>`;
   }
   if (open.length) {
     html += `<h2>Open notes (exact frame the artist saw)</h2><div class="notes">`;
     for (const n of open) {
-      const ne = noteEffect(st, n), im = frameImg(ne, n.frame), px = 192, sc = px / im.size;
+      const ne = noteEffect(st, n), im = await frameImg(ne, n.frame), px = 192, sc = px / im.size;
       html += `<div class="note"><div class="pinwrap"><img src="${im.src}" style="width:${px}px;height:${px}px"><div class="pin" style="left:${n.x * sc}px;top:${n.y * sc}px"></div></div><div><div class="k" style="font-size:12px">${esc(n.id)} · f${n.frame}</div><div class="m">${esc((n.hits || []).map(h => h.id + ' ' + Math.round(h.share * 100) + '%').join(' · '))}</div><div>${esc((n.tags || []).join(', '))}</div><div>${esc(n.text || '')}</div></div></div>`;
     }
     html += `</div>`;
   }
   if (refs.length) {
     html += `<h2>References</h2><div class="refs">${refs.map(r => `<figure style="margin:0"><img src="${pngData(PNG.sync.read(fs.readFileSync(r.file)).data, PNG.sync.read(fs.readFileSync(r.file)).width, PNG.sync.read(fs.readFileSync(r.file)).height)}"><figcaption>${esc(r.caption)}</figcaption></figure>`).join('')}
-      ${ev.match ? `<figure style="margin:0"><img src="${frameImg(e, ev.match.frame).src}" style="height:150px"><figcaption>current best match f${ev.match.frame}: ${esc(fmtMatch(ev.match))}</figcaption></figure>` : ''}</div>`;
+      ${ev.match ? `<figure style="margin:0"><img src="${(await frameImg(e, ev.match.frame)).src}" style="height:150px"><figcaption>current best match f${ev.match.frame}: ${esc(fmtMatch(ev.match))}</figcaption></figure>` : ''}</div>`;
   }
   html += `<h2>Brightness per frame</h2><div class="row">${sparkSvg([{ name: 'all', vals: m.perFrame.energy }, ...Object.entries(m.perLayer).map(([id, p]) => ({ name: id, vals: p.energy }))], 700, 90)}${sparkSvg([{ name: 'radius all', vals: m.perFrame.radius }, ...Object.entries(m.perLayer).map(([id, p]) => ({ name: id, vals: p.radius }))], 700, 90)}</div>`;
   fs.mkdirSync(OUT, { recursive: true });
@@ -321,18 +264,18 @@ function sampleVary(base, vary, rnd, around, radius) {
   return patch;
 }
 function patchDist(a, b, vary) { let s = 0; const ks = Object.keys(vary); for (const k of ks) s += Math.abs(a[k] - b[k]) / ((vary[k][1] - vary[k][0]) || 1); return s / ks.length; }
-async function search(base, sp, P, rnd, keep) {
+async function search(base, sp, ctx, rnd, keep) {
   const N = sp.samples || 120;
   const startPatch = {};
   for (const k of Object.keys(sp.vary)) { const [id, p] = k.split('.'); const l = FX.normalizeEffect(base).layers.find(x => x.id === id); startPatch[k] = l ? l.params[p] : sp.vary[k][0]; }
   const change = pt => 0.6 * patchDist(pt, startPatch, sp.vary);
   let pop = [startPatch, ...Array.from({ length: N - 1 }, () => sampleVary(base, sp.vary, rnd))];
-  let res = await P.run(pop.map(pt => FX.applyPatch(base, pt)));
+  let res = await E.map('evaluate', pop.map(pt => FX.applyPatch(base, pt)), ctx);
   let scored = pop.map((pt, i) => ({ pt, r: res[i], s: res[i].score + change(pt) })).sort((a, b) => a.s - b.s);
   // refine around the best few
   const elite = scored.slice(0, 6), local = [];
   for (const el of elite) for (let i = 0; i < Math.max(4, Math.round(N / 12)); i++) local.push(sampleVary(base, sp.vary, rnd, el.pt, 0.08));
-  res = await P.run(local.map(pt => FX.applyPatch(base, pt)));
+  res = await E.map('evaluate', local.map(pt => FX.applyPatch(base, pt)), ctx);
   scored = scored.concat(local.map((pt, i) => ({ pt, r: res[i], s: res[i].score + change(pt) }))).sort((a, b) => a.s - b.s);
   // diverse picks: greedy, each at least 0.15 apart in normalised parameter space
   const out = [];
@@ -352,7 +295,7 @@ async function run(st, refs, plan) {
   if (!plan.__base) throw new Error('base version not found');
   const want = plan.match && plan.match.refs ? (plan.match.refs === 'all' ? refs : refs.filter(r => plan.match.refs.includes(r.id))) : [];
   const ctx = { targets: plan.targets || [], refDescs: want.map(r => r.desc).filter(Boolean), aspects: plan.match && plan.match.aspects, matchWeight: plan.match ? (plan.match.weight === undefined ? 1 : plan.match.weight) : 0 };
-  const P = pool(Object.assign({ lowres: true }, ctx), Math.max(1, Math.min(8, os.cpus().length)));
+  const P = Object.assign({ lowres: true }, ctx);
   const rnd = rng(1234);
   const built = {}, order = [], notes = [];
   try {
@@ -376,10 +319,11 @@ async function run(st, refs, plan) {
       });
       notes.push(`sweep: ${evaluated} variants evaluated, kept ${picks.length}`);
     }
-  } finally { P.close(); }
+  } finally { /* engine stays open for the review */ }
   // full-resolution evaluation of every candidate
   const fullCtx = Object.assign({ lowres: false }, ctx);
-  for (const k of order) built[k].eval = evaluate(built[k].effect, fullCtx);
+  const evs = await E.map('evaluate', order.map(k => built[k].effect), fullCtx);
+  order.forEach((k, i) => { built[k].eval = evs[i]; });
 
   const table = [];
   const baseN = FX.normalizeEffect(plan.__base);
@@ -397,7 +341,7 @@ async function run(st, refs, plan) {
   html += `<h2>Candidates</h2>`;
   for (const k of order) {
     const c = built[k], ev = c.eval;
-    html += `<div class="row"><div class="lbl"><span class="k">${k}</span> ${esc(c.label)}<div class="m">${esc(fmtSum(ev.summary))}\n${ev.targets.map(t => (t.ok ? '✓ ' : '✗ ') + t.label + ' (' + t.actual + ')').join('\n')}${ev.match ? '\n' + esc(fmtMatch(ev.match)) : ''}</div></div>${strip(c.effect, frames, { px: 140 })}</div>`;
+    html += `<div class="row"><div class="lbl"><span class="k">${k}</span> ${esc(c.label)}<div class="m">${esc(fmtSum(ev.summary))}${ev.summary.loopJump !== undefined ? '\nloopJump ' + ev.summary.loopJump : ''}${ev.summary.tileSeam !== undefined ? ' tileSeam ' + ev.summary.tileSeam : ''}\n${ev.targets.map(t => (t.ok ? '✓ ' : '✗ ') + t.label + ' (' + t.actual + ')').join('\n')}${ev.match ? '\n' + esc(fmtMatch(ev.match)) : ''}</div></div>${await strip(c.effect, frames, { px: 140 })}</div>`;
   }
   fs.mkdirSync(OUT, { recursive: true });
   const file = path.join(OUT, 'run.png');
@@ -408,8 +352,10 @@ async function run(st, refs, plan) {
   if (plan.verify && built[plan.verify]) {
     const tmp = path.join(OUT, `verify_${plan.verify}.json`);
     fs.writeFileSync(tmp, JSON.stringify(Object.assign({}, built[plan.verify].effect, { id: st.eid + '_' + plan.verify.toLowerCase() })));
+    const sdir = path.join(OUT, 'sources'); fs.rmSync(sdir, { recursive: true, force: true }); fs.mkdirSync(sdir, { recursive: true });
+    for (const [id, url] of Object.entries(st.sources)) fs.writeFileSync(path.join(sdir, id + '.png'), Buffer.from(url.split(',')[1], 'base64'));
     try {
-      const r = JSON.parse(execFileSync('node', [path.join(HERE, 'fx.mjs'), 'verify', tmp], { maxBuffer: 1 << 26 }).toString());
+      const r = JSON.parse(execFileSync('node', [path.join(HERE, 'fx.mjs'), 'verify', tmp, '--sources', sdir], { maxBuffer: 1 << 26 }).toString());
       verify = Object.entries(r.engines).map(([k, v]) => `${k}: ${v.ok ? `contentError ${v.contentError} maxPx ${v.maxPixelError} slips ${(v.timingSlips || []).length}` : 'FAILED ' + (v.error || '').slice(0, 200)}`).join(' | ');
     } catch (e) { verify = 'verify failed: ' + String(e.message).slice(0, 300); }
   }
@@ -447,20 +393,23 @@ async function run(st, refs, plan) {
 }
 
 // ------------------------------------------------------------------ main
-if (isMainThread) {
+{
   const { cmd, dump, planArg, opts } = args();
   const eid = opts.effect || 'explosion';
   if (!['inspect', 'run'].includes(cmd) || !dump) {
-    console.log('usage: round.mjs inspect <dump> | run <dump> <plan.json|-> [--effect id]');
+    console.log('usage: round.mjs inspect <dump> | run <dump> <plan.json|-> [--effect id] [--pages n]');
     process.exit(1);
   }
   (async () => {
     const st = loadState(dump, eid);
     const refs = loadRefs(st);
+    await engine(cmd === 'run' ? Math.max(1, Math.min(6, +(opts.pages || os.cpus().length))) : 1);
+    await E.setSources(st.sources);
     if (cmd === 'inspect') await inspect(st, refs);
     else {
       const plan = JSON.parse(planArg === '-' || !planArg ? fs.readFileSync(0, 'utf8') : fs.readFileSync(planArg, 'utf8'));
       await run(st, refs, plan);
     }
-  })().catch(e => { console.error('ERROR ' + (e.stack || e)); process.exit(1); });
+    await E.close();
+  })().catch(async e => { console.error('ERROR ' + (e.stack || e)); if (E) await E.close(); process.exit(1); });
 }

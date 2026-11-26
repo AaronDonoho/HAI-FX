@@ -1,0 +1,40 @@
+{
+  "id": "aged-crate",
+  "name": "Aged crate",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 48,
+    "fps": 30,
+    "frames": 24,
+    "mode": "smooth",
+    "dither": true,
+    "alphaCut": 0.5,
+    "loop": false,
+    "tile": false
+  },
+  "palette": {
+    "rust": "#8a3b17",
+    "grime": "#2b2118",
+    "moss": "#4f6b2a",
+    "white": "#ffffff"
+  },
+  "layers": [
+    {
+      "id": "crate",
+      "type": "age",
+      "label": "Weathered crate",
+      "params": {
+        "source": "crate",
+        "rust": 0.6,
+        "grime": 0.6,
+        "chips": 0.35,
+        "cracks": 0.3,
+        "fade": 0.25,
+        "moss": 0.25,
+        "age": 1
+      }
+    }
+  ],
+  "checks": []
+}

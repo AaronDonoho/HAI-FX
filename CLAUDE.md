@@ -25,8 +25,8 @@ re-arms the watch with ArtifactComments `watch` on the Studio URL.
 
 ## Where things live
 - **Studio** (the shared editor): https://claude.ai/artifact/WjGgnbNxE3E2dxoAgT7C7i
-  Source: `studio/index.html`. Published with files `fxcore.js` <- `core/fxcore.js` and
-  `<effect>.json` <- `fx/<effect>/effect.json` (the starting point when the database is empty).
+  Source: `studio/index.html`. Published with files `fxcore.js`, `fxgpu.js` (from `core/`) and
+  `templates.json` (from `studio/`).
   Capabilities: `db`, `assets`, `downloads`, `comments` (Send to Claude), `sample` (Ask Claude).
   Open a given effect with `#<effect-id>`. Layout is built for the narrow side panel: the
   preview stays pinned while controls scroll.
@@ -49,9 +49,19 @@ re-arms the watch with ArtifactComments `watch` on the Studio URL.
   (Older per-type collections from the first studio versions are no longer read.)
 - **Repo mirror**: `fx/<id>/effect.json` holds the latest approved version, committed with the
   version number in the message.
-- **Renderer**: `core/fxcore.js`, one file used by the Studio and the tools, so preview and
-  exports come from identical code. Pure JS, deterministic per seed. Layer types: glow, ring,
-  sparks (also used for fine debris), smoke, fire (heat-ramp plumes: core/hot/mid/cool/edge).
+- **Renderer**: `core/fxcore.js` (CPU layers: glow, ring, sparks/debris, smoke, fire) plus
+  `core/fxgpu.js` (GPU layers, WebGL2 GLSL: electric, waveform, water, clouds, gears, sprite
+  [tint/flash/dissolve], outline [silhouette or contrast edges], shade [lighting from a sprite],
+  age [weathering], ripple and reflect [read everything below; blend `replace`]). The same files run
+  in the Studio and, through `tools/engine.mjs` (headless Chromium), in every tool.
+  Canvas flags `loop` and `tile` make GPU layers loop and tile exactly; `summary.loopJump` and
+  `summary.tileSeam` measure it (≈1 is seamless). New layer types: add to `fxgpu.js` TYPES (params +
+  `vec4 fx(vec2 uv)` returning premultiplied colour), then `node tools/templates.mjs`.
+- **Effects and templates**: the Studio lists `effects/<id>` index docs and starts new effects from
+  `studio/templates.json` (built from `fx/*/effect.json` and `fx/_sprites/*.png` by
+  `node tools/templates.mjs`, which also renders every template with checks into `build/templates.png`).
+- **Sprites**: items of kind `source` `{sid, name, data: PNG data URL ≤256 px}` in the effect's items;
+  layers reference them by `sid`. Tools get them from the same dump.
 
 ## A round in ~6 tool calls
 1. **Read everything**: ArtifactData `query`, collection `effects/<id>/items`, `limit` 1000,
@@ -87,6 +97,7 @@ penalty for moving away from the current values keep searches close to what the 
 node tools/fx.mjs render  fx/explosion/effect.json [--mode pixel] [--out exports/explosion]
 node tools/fx.mjs metrics fx/explosion/effect.json
 node tools/fx.mjs verify  fx/explosion/effect.json [--mode pixel] [--engines godot,defold]
+node tools/templates.mjs [--only water,gears]   # rebuild studio/templates.json + one review image of all templates
 bash tools/setup.sh        # installs Godot, Defold's bob.jar, Java 25 and libs in a fresh container
 ```
 `render` writes per-blend-pass sprite sheets, atlas JSON, metrics, a review sheet, and

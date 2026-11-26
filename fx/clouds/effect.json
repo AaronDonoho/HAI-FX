@@ -1,0 +1,44 @@
+{
+  "id": "clouds",
+  "name": "Clouds",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 48,
+    "fps": 30,
+    "frames": 48,
+    "mode": "smooth",
+    "dither": true,
+    "alphaCut": 0.5,
+    "loop": true,
+    "tile": true
+  },
+  "palette": {
+    "cloud": "#f4f6fb",
+    "cloudShadow": "#8a95b3"
+  },
+  "layers": [
+    {
+      "id": "clouds",
+      "type": "clouds",
+      "label": "Clouds",
+      "params": {}
+    }
+  ],
+  "checks": [
+    {
+      "id": "loop",
+      "label": "Loops seamlessly",
+      "metric": "loopJump",
+      "op": "<=",
+      "value": 1.5
+    },
+    {
+      "id": "tile",
+      "label": "Tiles seamlessly",
+      "metric": "tileSeam",
+      "op": "<=",
+      "value": 1.5
+    }
+  ]
+}

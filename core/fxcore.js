@@ -236,11 +236,12 @@
   // Fill in defaults and coerce; never mutates the input.
   function normalizeEffect(input) {
     const e = JSON.parse(JSON.stringify(input || {}));
-    e.canvas = Object.assign({ size: 128, pixelSize: 48, fps: 30, frames: 24, mode: 'smooth', dither: true, alphaCut: 0.5 }, e.canvas || {});
+    e.canvas = Object.assign({ size: 128, pixelSize: 48, fps: 30, frames: 24, mode: 'smooth', dither: true, alphaCut: 0.5, loop: false, tile: false }, e.canvas || {});
     e.palette = Object.assign({}, e.palette || {});
     e.seed = Number.isFinite(e.seed) ? e.seed : 1;
-    e.layers = (e.layers || []).filter(l => TYPES[l.type]).map(l => {
+    e.layers = (e.layers || []).filter(l => l && l.type).map(l => {
       const T = TYPES[l.type];
+      if (!T) return { id: l.id, type: l.type, label: l.label || l.type, blend: l.blend || 'normal', enabled: l.enabled !== false, params: Object.assign({}, l.params) };
       const params = {};
       for (const p of T.params) params[p.key] = l.params && l.params[p.key] !== undefined ? l.params[p.key] : p.def;
       return { id: l.id, type: l.type, label: l.label || T.label, blend: l.blend || T.blend, enabled: l.enabled !== false, params };
@@ -253,7 +254,9 @@
   function makeCtx(effect, frame) {
     const pixel = effect.canvas.mode === 'pixel';
     const size = pixel ? effect.canvas.pixelSize : effect.canvas.size;
-    return { size, R: size / 2, cx: size / 2, cy: size / 2, fps: effect.canvas.fps, frame, pal: effect.palette };
+    const ctx = { size, R: size / 2, cx: size / 2, cy: size / 2, fps: effect.canvas.fps, frame, pal: effect.palette };
+    ctx.color = name => slot(ctx, name);
+    return ctx;
   }
   const slot = (ctx, name) => hexToRgb(ctx.pal[name] !== undefined ? ctx.pal[name] : name);
 
@@ -515,21 +518,31 @@
     }
   };
 
+  // Other layer families (e.g. fxgpu.js) register here: def = {label, blend, params, readsBelow?, engine?}.
+  function registerType(name, def, renderFn) { TYPES[name] = def; RENDER[name] = renderFn; }
+
   // Render every enabled layer of one frame into its own premultiplied buffer.
+  // opts.sources: {id: {data, w, h}} sprite images; opts.only: layer ids to render.
+  // A layer whose type readsBelow receives the composite of the layers under it (ctx.below);
+  // blend 'replace' means its output stands in for everything below it.
   function renderLayers(effectIn, frame, opts) {
     const effect = effectIn.__norm ? effectIn : normalizeEffect(effectIn);
     opts = opts || {};
     const ctx = makeCtx(effect, frame);
-    const out = [];
+    ctx.sources = opts.sources || null;
+    const out = [], missing = [];
     for (const layer of effect.layers) {
       if (!layer.enabled) continue;
-      if (opts.only && !opts.only.includes(layer.id)) continue;
+      const T = TYPES[layer.type];
+      if (!T || !RENDER[layer.type]) { missing.push(layer.type); continue; }
       const buf = new Float32Array(ctx.size * ctx.size * 4);
+      if (T.readsBelow) ctx.below = flatten(ctx.size, out, null);
       RENDER[layer.type](effect, layer, layer.params, ctx, buf);
       for (let i = 3; i < buf.length; i += 4) if (buf[i] > 1) buf[i] = 1;
       out.push({ id: layer.id, blend: layer.blend, buf });
     }
-    return { size: ctx.size, layers: out };
+    const layers = opts.only ? out.filter(L => opts.only.includes(L.id)) : out;
+    return { size: ctx.size, layers, missing };
   }
 
   // Flatten layers in order. With bg ([r,g,b]) the result is opaque over that colour;
@@ -539,6 +552,13 @@
     if (bg) for (let i = 0; i < N; i++) { out[i * 4] = bg[0]; out[i * 4 + 1] = bg[1]; out[i * 4 + 2] = bg[2]; out[i * 4 + 3] = 1; }
     for (const L of layers) {
       const b = L.buf;
+      if (L.blend === 'replace') {
+        for (let i = 0; i < N * 4; i += 4) {
+          const k = bg ? 1 - b[i + 3] : 0;
+          out[i] = b[i] + (bg ? bg[0] * k : 0); out[i + 1] = b[i + 1] + (bg ? bg[1] * k : 0); out[i + 2] = b[i + 2] + (bg ? bg[2] * k : 0); out[i + 3] = bg ? 1 : b[i + 3];
+        }
+        continue;
+      }
       for (let i = 0; i < N * 4; i += 4) {
         if (L.blend === 'add') {
           out[i] += b[i]; out[i + 1] += b[i + 1]; out[i + 2] += b[i + 2];
@@ -630,7 +650,8 @@
     const pixel = effect.canvas.mode === 'pixel';
     const groups = [];
     for (const l of effect.layers) {
-      if (!l.enabled) continue;
+      if (!l.enabled || !TYPES[l.type]) continue;
+      if (l.blend === 'replace') { groups.length = 0; groups.push({ blend: 'normal', layers: [l.id] }); continue; }
       const blend = pixel ? 'normal' : l.blend;
       const last = groups[groups.length - 1];
       if (last && (pixel || last.blend === blend)) last.layers.push(l.id); else groups.push({ blend, layers: [l.id] });
@@ -638,13 +659,13 @@
     return groups.map((g, gi) => Object.assign(g, { name: 'g' + gi + '_' + g.blend }));
   }
   // One frame of every pass, as straight-alpha 8-bit RGBA images.
-  function renderPassFrame(effectIn, frame, groups) {
+  function renderPassFrame(effectIn, frame, groups, opts) {
     const effect = effectIn.__norm ? effectIn : Object.assign(normalizeEffect(effectIn), { __norm: true });
     groups = groups || passGroups(effect);
     const pixel = effect.canvas.mode === 'pixel';
-    const { size, layers } = renderLayers(effect, frame);
+    const { size, layers } = renderLayers(effect, frame, opts);
     const images = groups.map(pass => {
-      const ls = layers.filter(L => pass.layers.includes(L.id));
+      const ls = layers.filter(L => pass.layers.includes(L.id)).map(L => (L.blend === 'replace' ? Object.assign({}, L, { blend: 'normal' }) : L));
       if (pixel) return straight8FromFloat(pixelize(effect, size, flatten(size, ls, null)));
       if (pass.blend === 'add') {
         const flat = flatten(size, ls.map(L => Object.assign({}, L, { blend: 'add' })), [0, 0, 0]);
@@ -659,12 +680,12 @@
     });
     return { size, images, layers };
   }
-  function exportPasses(effectIn) {
+  function exportPasses(effectIn, opts) {
     const effect = Object.assign(normalizeEffect(effectIn), { __norm: true });
     const groups = passGroups(effect);
     const passes = groups.map(g => ({ name: g.name, blend: g.blend, layers: g.layers, frames: [] }));
     for (let f = 0; f < effect.canvas.frames; f++) {
-      const r = renderPassFrame(effect, f, groups);
+      const r = renderPassFrame(effect, f, groups, opts);
       r.images.forEach((img, i) => passes[i].frames.push(img));
     }
     const size = effect.canvas.mode === 'pixel' ? effect.canvas.pixelSize : effect.canvas.size;
@@ -720,10 +741,12 @@
     for (const l of effect.layers) if (l.enabled) per[l.id] = { energy: [], coverage: [], radius: [] };
     const frames = [];
     let size = 0;
+    const keep = [];
     for (let f = 0; f < F; f++) {
-      const r = renderFrame(effect, f, { bg: [0, 0, 0] });
+      const r = renderFrame(effect, f, { bg: [0, 0, 0], sources: opts.sources });
       size = r.size;
       if (opts.keepFrames) frames.push(r.data);
+      if (effect.canvas.loop || effect.canvas.tile) keep.push(r.data);
       const N = size * size, cx = size / 2, R = size / 2, norm = 16384 / N;
       const distBin = p => { const x = (p % size) + 0.5 - cx, y = Math.floor(p / size) + 0.5 - cx; return Math.min(63, Math.floor((Math.hypot(x, y) / R) * 32)); };
       let layerHits = 0, union = 0;
@@ -771,6 +794,24 @@
       layers: {},
     });
     for (const [id, P] of Object.entries(per)) summary.layers[id] = seriesSummary(P.energy, P.radius, P.coverage);
+    const mad = (a, b) => { let s = 0; for (let i = 0; i < a.length; i += 4) s += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]); return s / (a.length * 0.75); };
+    if (effect.canvas.loop && keep.length > 2) {
+      // jump from the last frame back to the first, relative to a typical frame-to-frame step (1 = seamless)
+      // compared with the larger steps (90th percentile), so stepped animation (flicker) is not penalised
+      const steps = []; for (let f = 1; f < keep.length; f++) steps.push(mad(keep[f - 1], keep[f]));
+      steps.sort((x, y) => x - y);
+      const typical = steps[Math.min(steps.length - 1, Math.floor(steps.length * 0.9))];
+      summary.loopJump = +(mad(keep[keep.length - 1], keep[0]) / Math.max(0.05, typical)).toFixed(2);
+    }
+    if (effect.canvas.tile && keep.length) {
+      // difference across the wrap edges relative to neighbouring columns/rows inside (1 = seamless)
+      const d = keep[0], S = size, px = (x, y) => (y * S + x) * 4;
+      const edge = (horiz) => { let e = 0, inner = 0; for (let k = 0; k < S; k++) for (let c = 0; c < 3; c++) {
+        if (horiz) { e += Math.abs(d[px(S - 1, k) + c] - d[px(0, k) + c]); inner += Math.abs(d[px(S / 2, k) + c] - d[px(S / 2 - 1, k) + c]); }
+        else { e += Math.abs(d[px(k, S - 1) + c] - d[px(k, 0) + c]); inner += Math.abs(d[px(k, S / 2) + c] - d[px(k, S / 2 - 1) + c]); } }
+        return e / Math.max(1, inner); };
+      summary.tileSeam = +Math.max(edge(true), edge(false)).toFixed(2);
+    }
     const out = { perFrame: m, perLayer: per, summary, checks: evaluateChecks(effect, summary) };
     if (opts.keepFrames) { out.frames = frames; out.size = size; }
     return out;
@@ -787,6 +828,43 @@
       const pass = v !== undefined && ops[c.op] ? ops[c.op](v, c.value) : null;
       return Object.assign({}, c, { actual: v, pass });
     });
+  }
+
+  // --------------------------------------------------------- evaluation
+  // Score an effect against targets (from notes) and reference descriptors. Lower score = better.
+  const SCALE = { peakFrame: 3, startFrame: 3, fadeFrame: 3, peakEnergy: 400, maxRadius: 0.12, maxCoverage: 0.06, maxOverdraw: 0.8, orphanPixels: 40, loopJump: 0.5, tileSeam: 0.5 };
+  function violation(t, v) {
+    if (v === undefined || v === null) return 1;
+    const s = SCALE[t.metric] || 1;
+    if (t.op === '>=' || t.op === '>') return Math.max(0, t.value - v) / s;
+    if (t.op === '<=' || t.op === '<') return Math.max(0, v - t.value) / s;
+    return Math.abs(v - t.value) / s;
+  }
+  function evaluate(effectIn, ctx) {
+    ctx = ctx || {};
+    let e = normalizeEffect(effectIn);
+    if (ctx.lowres && e.canvas.mode !== 'pixel') e.canvas.size = 64;
+    const refDescs = ctx.refDescs || [];
+    const m = measure(e, { keepFrames: refDescs.length > 0, sources: ctx.sources });
+    let viol = 0;
+    const targets = (ctx.targets || []).map(t => {
+      const v = metricValue(m.summary, t), d = violation(t, v);
+      viol += (t.weight === undefined ? 1 : t.weight) * d;
+      return { label: (t.layer ? t.layer + '.' : '') + t.metric + t.op + t.value, actual: v, ok: d === 0 };
+    });
+    let match = null;
+    if (refDescs.length) {
+      m.frames.forEach((fr, f) => {
+        const d = describeImage(fr, m.size, m.size);
+        if (!d) return;
+        const cs = refDescs.map(rd => compareDescriptors(d, rd, ctx.aspects));
+        const avg = {};
+        for (const k of Object.keys(cs[0])) avg[k] = +(cs.reduce((s, c) => s + c[k], 0) / cs.length).toFixed(3);
+        if (!match || avg.overall > match.overall) match = Object.assign(avg, { frame: f });
+      });
+    }
+    const score = viol + (match ? (ctx.matchWeight === undefined ? 1 : ctx.matchWeight) * (1 - match.overall) * 4 : 0);
+    return { summary: m.summary, targets, viol: +viol.toFixed(3), match, score: +score.toFixed(4) };
   }
 
   // ------------------------------------------------------- image matching
@@ -911,7 +989,7 @@
   }
 
   return {
-    EASE, TYPES, ease, paramSpec, normalizeEffect, renderLayers, renderFrame, flatten, exportPasses, passGroups, renderPassFrame,
+    EASE, TYPES, ease, paramSpec, normalizeEffect, registerType, evaluate, renderLayers, renderFrame, flatten, exportPasses, passGroups, renderPassFrame,
     attribute, measure, evaluateChecks, metricValue, describeImage, compareDescriptors, diff, applyPatch, hexToRgb, rgbToHex, lum,
   };
 });

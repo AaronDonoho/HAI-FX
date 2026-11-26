@@ -35,7 +35,11 @@ button:disabled { cursor: default; }
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding-block: 8px; }
 .mark { font: 600 16px/1 var(--f-mark); letter-spacing: 0.06em; color: var(--accent); }
 .mark span { color: var(--text); }
-.fxname { font-weight: 600; font-size: 14px; }
+.fxname { font-weight: 600; font-size: 14px; background: transparent; border: 1px solid transparent; border-radius: var(--r); padding: 2px 4px; max-width: 46vw; }
+.fxname:hover, .fxname:focus { border-color: var(--line-2); background: var(--panel-2); }
+.srcs { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; padding: 10px 12px; }
+.src { border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; font-size: 11px; color: var(--muted); }
+.src img { width: 64px; height: 64px; object-fit: contain; image-rendering: pixelated; background: repeating-conic-gradient(#24222c 0 25%, #1b1a22 0 50%) 0 0 / 12px 12px; }
 .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); font-size: 12px; white-space: nowrap; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
 .dot.ok { background: var(--good); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); } .dot.claude { background: var(--claude); }
@@ -199,7 +203,7 @@ input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 3px
 .toast { display: flex; align-items: center; gap: 10px; position: fixed; left: 50%; bottom: calc(16px + var(--kb, 0px) + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line-2);
   border-radius: 8px; padding: 8px 14px; z-index: 40; box-shadow: 0 8px 30px rgba(0,0,0,0.5); max-width: calc(100vw - 32px); }
 @media (max-width: 560px) {
-  .mark, .fxname { display: none; }
+  .mark { display: none; }
   .hide-sm { display: none !important; }
   .stagebox { height: min(34vh, 100vw) !important; padding: 6px; }
   .transport, .viewbar { padding: 4px 10px; }
@@ -210,7 +214,7 @@ input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 3px
 <div class="app" id="app">
   <header class="top gut" id="top">
     <div class="mark">HAI<span>·FX</span></div>
-    <div class="fxname" id="fxName">Explosion</div>
+    <select class="fxname" id="fxName" aria-label="Effect"></select>
     <span class="pill" id="verPill"><span class="dot"></span><span>Loading…</span></span>
     <div class="spacer"></div>
     <button class="btn claude" id="sendBtn" title="Wake Claude in your chat to do a full round on this effect">Send to Claude</button>
@@ -262,17 +266,17 @@ input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 3px
       <div class="ask" id="askBox">
         <label for="askText">Ask Claude for a change</label>
         <div class="row">
-          <input class="tin" id="askText" placeholder="e.g. bigger plumes, more red at the edges, linger longer">
+          <input class="tin" id="askText" placeholder="Describe a change">
           <button class="btn claude" id="askBtn">Ask</button>
         </div>
-        <div class="status" id="askStatus">Claude suggests three versions of your change; you compare them on the preview and pick one.</div>
+        <div class="status" id="askStatus"></div>
       </div>
       <div class="tabs" role="tablist">
         <button role="tab" data-tab="edit" aria-selected="true">Edit</button>
         <button role="tab" data-tab="colours" aria-selected="false">Colours</button>
         <button role="tab" data-tab="choices" aria-selected="false">Choices<span class="count" id="cCount">0</span></button>
         <button role="tab" data-tab="notes" aria-selected="false">Notes<span class="count" id="nCount">0</span></button>
-        <button role="tab" data-tab="refs" aria-selected="false">Refs</button>
+        <button role="tab" data-tab="refs" aria-selected="false">Images</button>
         <button role="tab" data-tab="measure" aria-selected="false">Measure</button>
         <button role="tab" data-tab="history" aria-selected="false">History</button>
       </div>
@@ -282,6 +286,7 @@ input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 3px
 </div>
 
 <script src="fxcore.js"></script>
+<script src="fxgpu.js"></script>
 <script>
 (function () {
 'use strict';
@@ -308,6 +313,7 @@ const S = {
   notes: [], proposals: [], refs: [], versions: [],
   db: null, assets: null, downloads: null, comments: null, sample: null, remotePending: null,
   composer: null, hotNote: null, overlay: null, saving: false, asking: null, propsLoaded: false,
+  sources: {}, sourceItems: [], templates: [], effects: [],
 };
 const store = {
   get(k) { try { return localStorage.getItem('haifx.' + k); } catch (e) { return null; } },
@@ -372,7 +378,7 @@ function renderFrames(effect, target, onDone) {
     const t0 = performance.now();
     while (k < order.length && performance.now() - t0 < 14) {
       const f = order[k++];
-      const r = FX.renderPassFrame(e, f, groups);
+      const r = FX.renderPassFrame(e, f, groups, { sources: target.sources || S.sources });
       target.frames[f] = r.images.map((img, i) => {
         const c = document.createElement('canvas'); c.width = c.height = size;
         c.getContext('2d').putImageData(new ImageData(img, size, size), 0, 0);
@@ -507,7 +513,7 @@ stageCanvas.addEventListener('click', ev => {
   setPlaying(false);
   const p = canvasPoint(ev);
   // Exactly which layers drew this pixel on this frame (same renderer as the export).
-  const lay = FX.renderLayers(Object.assign(FX.normalizeEffect(displayEffect()), { __norm: true }), S.frame);
+  const lay = FX.renderLayers(Object.assign(FX.normalizeEffect(displayEffect()), { __norm: true }), S.frame, { sources: S.sources });
   openComposer(p, FX.attribute(lay.layers, lay.size, p.x, p.y));
 });
 function openComposer(p, hits) {
@@ -600,8 +606,8 @@ function drawTicks() {
 let worker = null;
 (async () => {
   try {
-    const src = await (await fetch('fxcore.js')).text();
-    const blob = new Blob([src, '\nself.onmessage = e => { try { postMessage({ gen: e.data.gen, r: FXCore.measure(e.data.effect) }); } catch (err) { postMessage({ gen: e.data.gen, error: String(err) }); } };'], { type: 'text/javascript' });
+    const src = await (await fetch('fxcore.js')).text(), gpu = await (await fetch('fxgpu.js')).text();
+    const blob = new Blob([src, '\n', gpu, '\nself.onmessage = e => { try { postMessage({ gen: e.data.gen, r: FXCore.measure(e.data.effect, { sources: e.data.sources }) }); } catch (err) { postMessage({ gen: e.data.gen, error: String(err) }); } };'], { type: 'text/javascript' });
     const w = new Worker(URL.createObjectURL(blob));
     w.onmessage = ev => { if (ev.data.gen === S.metricsGen && ev.data.r) { S.metrics = ev.data.r; renderMetrics(); } };
     worker = w;
@@ -612,8 +618,8 @@ function scheduleMetrics() {
   clearTimeout(mTimer);
   mTimer = setTimeout(() => {
     const gen = ++S.metricsGen, eff = clean(S.cur);
-    if (worker) worker.postMessage({ gen, effect: eff });
-    else { S.metrics = FX.measure(eff); renderMetrics(); }
+    if (worker) worker.postMessage({ gen, effect: eff, sources: S.sources });
+    else { S.metrics = FX.measure(eff, { sources: S.sources }); renderMetrics(); }
   }, 250);
 }
 function spark(vals, color, cursorFrame, mark, label) {
@@ -679,7 +685,13 @@ function renderChoiceBar() {
 function paramRow(spec, value, baseValue, onSet, onLive) {
   const changed = baseValue !== undefined && JSON.stringify(baseValue) !== JSON.stringify(value);
   const row = h('div', { class: 'param' }, h('label', { class: changed ? 'changed' : '', title: changed ? `Saved value: ${baseValue}` : spec.label, text: spec.label }));
-  if (spec.type === 'ease') {
+  if (spec.type === 'choice') {
+    row.append(h('div', { class: 'wide' }, h('select', { class: 'tin', 'aria-label': spec.label, onchange: e => onSet(+e.target.value) }, (spec.options || []).map((o, i) => h('option', { value: i, selected: i === +value, text: o })))));
+  } else if (spec.type === 'source') {
+    const ids = Object.keys(S.sources);
+    row.append(h('div', { class: 'wide' }, h('select', { class: 'tin', 'aria-label': spec.label, onchange: e => onSet(e.target.value) },
+      h('option', { value: '', text: ids.length ? '(none)' : 'Add a sprite in Images' }), ids.map(k => h('option', { value: k, selected: k === value, text: S.sources[k].name || k })))));
+  } else if (spec.type === 'ease') {
     row.append(h('div', { class: 'wide' }, h('select', { class: 'tin', 'aria-label': spec.label, onchange: e => onSet(e.target.value) }, Object.keys(FX.EASE).map(k => h('option', { value: k, selected: k === value, text: k }))), easeSvg(value)));
   } else if (spec.type === 'color') {
     row.append(h('div', { class: 'wide' }, h('span', { class: 'swatch', style: `display:inline-block;background:${S.cur.palette[value] || '#f0f'}` }),
@@ -693,7 +705,7 @@ function paramRow(spec, value, baseValue, onSet, onLive) {
     num.addEventListener('change', () => { const v = Math.min(spec.max, Math.max(spec.min, +num.value)); onSet(spec.type === 'num' ? v : Math.round(v)); });
     row.append(range, num);
   }
-  if (spec.help) row.append(h('div', { class: 'help', text: spec.help }));
+  if (spec.help) row.firstChild.title = spec.help;
   return row;
 }
 function easeSvg(name) {
@@ -737,7 +749,6 @@ function tabEdit(body) {
     h('input', { class: 'tin', value: l.label, 'aria-label': 'Layer name', onchange: e => { l.label = e.target.value || T.label; edited(); } }),
     h('select', { class: 'tin', style: 'flex:0 0 auto;width:auto', 'aria-label': 'Blend mode', onchange: e => { l.blend = e.target.value; edited(); } },
       h('option', { value: 'add', selected: l.blend === 'add', text: 'Add (light)' }), h('option', { value: 'normal', selected: l.blend === 'normal', text: 'Alpha' })),
-    h('div', { class: 'muted', style: 'flex-basis:100%', text: T.blurb }),
     h('div', { class: 'row' },
       h('button', { class: 'btn small', disabled: idx === S.cur.layers.length - 1, onclick: () => moveLayer(idx, 1) }, 'Draw above'),
       h('button', { class: 'btn small', disabled: idx === 0, onclick: () => moveLayer(idx, -1) }, 'Draw below'),
@@ -753,12 +764,11 @@ function tabEdit(body) {
   }
   const sel = h('select', { class: 'tin', style: 'flex:1', 'aria-label': 'Setting to explore' }, T.params.map(p => h('option', { value: p.key, text: p.label })));
   body.append(h('div', { class: 'sec' }, h('h3', { text: 'Explore one setting' }),
-    h('p', { class: 'muted', style: 'margin:0 0 8px', text: 'See six values of one setting playing side by side, then pick one.' }),
     h('div', { class: 'row' }, sel, h('button', { class: 'btn small', onclick: () => openExplore(l, sel.value) }, 'Compare 6'))));
 }
 function effectSettings(body) {
   const c = S.cur.canvas, b = S.base ? FX.normalizeEffect(S.base).canvas : {};
-  const sec = h('div', { class: 'sec' }, h('h3', { text: 'Effect settings' }), h('p', { class: 'muted', style: 'margin:0 0 6px', text: 'Pick a layer above to edit it.' }));
+  const sec = h('div', { class: 'sec' }, h('h3', { text: 'Effect settings' }));
   const specs = [
     { key: 'frames', label: 'Frames', type: 'int', min: 4, max: 96, step: 1 },
     { key: 'fps', label: 'FPS', type: 'int', min: 6, max: 60, step: 1 },
@@ -767,6 +777,8 @@ function effectSettings(body) {
     { key: 'alphaCut', label: 'Alpha cut', type: 'num', min: 0.05, max: 0.95, step: 0.01, help: 'Pixel mode: how solid a pixel must be to be drawn.' },
   ];
   for (const s of specs) sec.append(paramRow(s, c[s.key], b[s.key], v => { c[s.key] = v; edited(); }, v => { c[s.key] = v; rerender(); }));
+  for (const [k, label] of [['loop', 'Seamless loop'], ['tile', 'Tiles seamlessly']]) sec.append(h('div', { class: 'param' }, h('label', { class: b[k] !== undefined && b[k] !== c[k] ? 'changed' : '', text: label }),
+    h('div', { class: 'wide' }, h('input', { type: 'checkbox', checked: !!c[k], 'aria-label': label, onchange: e => { c[k] = e.target.checked; edited(); } }))));
   sec.append(h('div', { class: 'param' }, h('label', { text: 'Dither' }), h('div', { class: 'wide' }, h('input', { type: 'checkbox', checked: c.dither, 'aria-label': 'Dither', onchange: e => { c.dither = e.target.checked; edited(); } }), h('span', { class: 'muted', text: 'Pixel mode edge dithering' }))));
   sec.append(h('div', { class: 'param' }, h('label', { class: S.base && S.base.seed !== S.cur.seed ? 'changed' : '', text: 'Random seed' }),
     h('div', { class: 'wide' }, h('span', { class: 'mono', text: String(S.cur.seed) }), h('button', { class: 'btn small', onclick: () => { S.cur.seed = Math.floor(Math.random() * 9999) + 1; edited(); } }, 'Reroll'))));
@@ -794,7 +806,6 @@ function tabColours(body) {
   }
   const ta = h('textarea', { class: 'tin mono', placeholder: '#ffcf5c\n#ff8a2a\nff3b1f   (any hex codes; Lospec .hex works)' });
   body.append(h('div', { class: 'sec' }, h('h3', { text: 'Palette' }),
-    h('p', { class: 'muted', style: 'margin:0 0 8px', text: 'Layers use these named colours, so changing one recolours every layer that uses it. Pick colours from a reference in the Refs tab.' }),
     pal, h('div', { class: 'row', style: 'margin-top:8px' }, h('button', { class: 'btn small', onclick: () => { let n = 1; while (S.cur.palette['c' + n]) n++; S.cur.palette['c' + n] = '#ffffff'; edited(); } }, 'Add colour'))));
   body.append(h('div', { class: 'sec' }, h('h3', { text: 'Paste hex codes' }), ta,
     h('div', { class: 'row', style: 'margin-top:6px' },
@@ -839,7 +850,6 @@ async function setNoteStatus(n, status) { try { await item(n.id).update({ status
 function tabNotes(body) {
   const rounds = (S.rounds || []).slice(-3).reverse();
   for (const r of rounds) body.append(h('div', { class: 'card claude' }, h('div', { class: 'meta' }, h('span', { class: 'dot claude' }), h('strong', { text: 'Claude · round' }), h('span', { text: ago(r.t || r.createdAt) })), h('div', { class: 'reply', text: r.message || '' })));
-  body.append(h('div', { class: 'empty' }, 'Click anywhere on the preview to pin a note. It records the frame, the spot, which layers drew it and their settings, so Claude knows exactly what you mean.'));
   if (!S.notes.some(n => n.status !== 'dismissed' && n.kind !== 'ask')) { body.append(h('div', { class: 'empty', text: 'No notes yet. Your Ask Claude requests are listed under Choices.' })); return; }
   const own = S.notes.filter(n => n.kind !== 'ask');
   own.forEach((n, i) => { if (n.status !== 'dismissed') body.append(noteCard(n, own.length - i)); });
@@ -848,7 +858,7 @@ function tabNotes(body) {
 // ---------------------------------------------------------- Choices tab
 function tabChoices(body) {
   const open = openProposals(), done = S.proposals.filter(p => p.status === 'answered');
-  if (!open.length && !done.length) body.append(h('div', { class: 'empty' }, 'When Claude has options for you, they appear here and in a bar at the top. Compare them playing side by side, pick the closest, or say why none fit.'));
+  if (!open.length && !done.length) body.append(h('div', { class: 'empty' }, 'No choices yet.'));
   for (const p of open) body.append(h('div', { class: 'card claude' },
     h('div', { class: 'meta' }, h('span', { class: 'dot claude' }), h('span', { text: 'Claude' }), h('span', { text: ago(p.createdAt) })),
     h('strong', { text: p.title || 'Choice' }), p.question ? h('div', { class: 'txt', text: p.question }) : null,
@@ -877,7 +887,14 @@ function openAsk(a) {
 
 // ------------------------------------------------------------- Refs tab
 function tabRefs(body) {
-  body.append(h('div', { class: 'empty' }, 'Add effects you like, art from your game, or a game screenshot. For each image you can show it beside the effect to compare, use it as the preview background, or click it to pick colours.'));
+  const sec = h('div', { class: 'sec' }, h('h3', {}, 'Sprites', h('span', { class: 'spacer' })));
+  const sin = h('input', { type: 'file', accept: 'image/png,image/gif,image/webp,image/jpeg', multiple: true, hidden: true, onchange: e => addSprites([...e.target.files]) });
+  if (S.db) sec.firstChild.append(sin, h('button', { class: 'btn small', onclick: () => sin.click() }, 'Add sprites'));
+  const sg = h('div', { class: 'srcs' });
+  for (const it of S.sourceItems) sg.append(h('div', { class: 'src' }, h('img', { src: it.data, alt: it.name || it.sid }), h('span', { text: it.name || it.sid }),
+    S.db ? h('button', { class: 'btn small ghost danger', onclick: () => item(it.id).delete() }, 'Remove') : null));
+  if (!S.sourceItems.length) sg.append(h('span', { class: 'muted', text: 'None yet' }));
+  body.append(sec, sg, h('div', { class: 'sec' }, h('h3', { text: 'References' })));
   if (S.assets) {
     const input = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onchange: e => uploadRefs([...e.target.files]) });
     body.append(h('div', { class: 'row', style: 'padding:0 14px' }, input, h('button', { class: 'btn', onclick: () => input.click() }, 'Add images')));
@@ -895,6 +912,42 @@ function tabRefs(body) {
         S.assets ? h('button', { class: 'btn small ghost danger', onclick: () => deleteRef(r) }, 'Remove') : null)));
   }
   body.append(grid);
+}
+// Sprites are kept small (max 256 px) and stored inline as PNG so the renderer and Claude get them with
+// the rest of the effect in one read.
+async function addSprites(files) {
+  for (const f of files) {
+    try {
+      const url = URL.createObjectURL(f);
+      const im = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+      URL.revokeObjectURL(url);
+      const sc = Math.min(1, 256 / Math.max(im.naturalWidth, im.naturalHeight));
+      const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(im.naturalWidth * sc)); c.height = Math.max(1, Math.round(im.naturalHeight * sc));
+      const g = c.getContext('2d'); g.imageSmoothingEnabled = sc < 1; g.drawImage(im, 0, 0, c.width, c.height);
+      const data = c.toDataURL('image/png');
+      if (data.length > 240000) { toast(f.name + ' is too detailed to store; try a smaller sprite.'); continue; }
+      let sid = f.name.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'sprite';
+      while (S.sources[sid]) sid += '2';
+      await item('src-' + sid).set({ kind: 'source', sid, name: f.name, data, w: c.width, h: c.height, createdAt: now(), t: now(), author: 'you' });
+      toast(`Added sprite ${sid}`);
+    } catch (e) { toast('Could not add ' + f.name + ': ' + (e.code || e.message)); }
+  }
+}
+async function decodeSources(items, into) {
+  const next = {};
+  for (const it of items) {
+    const sid = it.sid || it.id;
+    if (S.sources[sid] && S.sources[sid].url === it.data) { next[sid] = S.sources[sid]; continue; }
+    try {
+      const bmp = await createImageBitmap(await (await fetch(it.data)).blob());
+      const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
+      const g = c.getContext('2d'); g.drawImage(bmp, 0, 0);
+      const d = g.getImageData(0, 0, bmp.width, bmp.height);
+      next[sid] = { data: d.data, w: d.width, h: d.height, pixel: Math.max(d.width, d.height) <= 128, name: it.name || sid, url: it.data };
+    } catch (e) {}
+  }
+  if (into) return next;
+  S.sources = next;
 }
 // A small JPEG copy rides along in the database so Claude can read references without fetching each file.
 async function makeThumb(file) {
@@ -939,7 +992,6 @@ function tabMeasure(body) {
   if (S.cur.canvas.mode === 'pixel') add('Stray pixels', m.summary.orphanPixels);
   sec.append(facts, h('h3', { text: 'Checks' }));
   for (const c of m.checks) sec.append(h('div', { class: 'check' }, h('span', { class: 'dot ' + (c.pass ? 'ok' : 'bad') }), h('span', { text: c.label }), h('span', { class: 'mono', text: String(c.actual) })));
-  sec.append(h('p', { class: 'muted', style: 'margin:10px 0 0', text: 'Radius is in frame units: 1.0 reaches the edge of the frame. Claude turns measurable notes ("dies too fast") into checks.' }));
   body.append(sec);
 }
 
@@ -965,9 +1017,9 @@ function tabHistory(body) {
 function openCompare(cfg) {
   closeOverlay(); closeComposer(); setPlaying(true);
   S.lastCompare = cfg;
-  const cells = cfg.options.map(o => ({ key: o.key, label: o.label, effect: o.effect, cache: { gen: 0, size: 64, groups: [], frames: [] }, canvas: h('canvas', { width: 1, height: 1 }) }));
+  const cells = cfg.options.map(o => ({ key: o.key, label: o.label, effect: o.effect, cache: { gen: 0, size: 64, groups: [], frames: [], sources: o.srcMap }, canvas: h('canvas', { width: 1, height: 1 }) }));
   const ov = { kind: 'compare', cfg, cells, selected: null };
-  const comment = h('input', { class: 'tin', placeholder: cfg.proposal ? 'Why this one? What would you change? (optional)' : 'Optional note', 'aria-label': 'Comment' });
+  const comment = h('input', { class: 'tin', hidden: cfg.title === 'New effect', placeholder: cfg.proposal ? 'Why this one? What would you change? (optional)' : 'Optional note', 'aria-label': 'Comment' });
   const useBtn = h('button', { class: 'btn primary', disabled: true, onclick: () => finishCompare(ov, comment.value) }, 'Pick one above');
   const verb = cfg.picked ? 'Use ' : 'Choose ';
   const select = (key, el) => { ov.selected = key; grid.querySelectorAll('.cell:not(.refcell)').forEach(x => x.setAttribute('aria-pressed', String(x === el))); useBtn.disabled = false; useBtn.textContent = verb + key; };
@@ -1010,7 +1062,7 @@ async function finishCompare(ov, comment, none) {
     try { await item(cfg.proposal.id).update({ status: 'answered', pick: { key: cell ? cell.key : null, comment: comment || '', at: now() }, t: now() }); }
     catch (e) { toast('Could not save your pick: ' + (e.code || e.message)); return; }
   }
-  if (cfg.onPick && !cfg.picked) cfg.onPick(cell, comment);
+  if (cfg.onPick && !cfg.picked) { const r = cfg.onPick(cell, comment); if (cfg.title === 'New effect') { closeOverlay(); return r; } }
   cfg.picked = cell ? cell.key : null;
   const again = { label: 'Show options again', run: () => openCompare(cfg) };
   if (cell) { S.cur = FX.normalizeEffect(clean(cell.effect)); edited(); toast(`Applied ${cell.key}. Keep tweaking, or save a version.`, again); }
@@ -1088,6 +1140,7 @@ function sanitizePatch(patch) {
     const spec = FX.paramSpec(l.type, key); if (!spec) continue;
     if (spec.type === 'ease') { if (FX.EASE[v]) out[k] = v; }
     else if (spec.type === 'color') { if (typeof v === 'string' && (S.cur.palette[v] || Object.keys(patch).includes('palette.' + v))) out[k] = v; }
+    else if (spec.type === 'source') { if (typeof v === 'string' && S.sources[v]) out[k] = v; }
     else if (typeof v === 'number' && isFinite(v)) { let x = Math.min(spec.max, Math.max(spec.min, v)); if (spec.type !== 'num') x = Math.round(x); out[k] = x; }
   }
   return out;
@@ -1156,7 +1209,6 @@ async function openSend() {
   const saveFirst = h('input', { type: 'checkbox', id: 'saveFirst', checked: n > 0 });
   dr.append(
     h('strong', { text: 'Send this round to Claude' }),
-    h('p', { class: 'muted', text: 'Claude in your chat wakes up, reads your saved versions, notes, choices and references, makes the next version, and replies here and in the chat. Takes a few minutes.' }),
     h('div', { class: 'row mono' }, h('span', { class: 'pill', text: `v${S.baseVersion} saved` }), h('span', { class: 'pill', text: `${openNotes} open notes` }), h('span', { class: 'pill', text: `${answered} answered choices` }), h('span', { class: 'pill', text: `${S.refs.length} refs` })),
     n ? h('label', { class: 'row' }, saveFirst, `Save my ${n} unsaved edit${n > 1 ? 's' : ''} as v${S.baseVersion + 1} first`) : null,
     msg);
@@ -1215,7 +1267,7 @@ function updateHeader() {
   const sb = $('saveBtn'); sb.disabled = !n || !S.db; sb.textContent = n ? `Save v${S.baseVersion + 1}` : (S.baseVersion ? 'Saved' : 'Save');
   $('modeSmooth').setAttribute('aria-pressed', String(S.cur.canvas.mode !== 'pixel'));
   $('modePixel').setAttribute('aria-pressed', String(S.cur.canvas.mode === 'pixel'));
-  $('fxName').textContent = S.cur.name || EID;
+  if (!S.effects.length) fillEffects();
   if (!$('saveDrawer').hidden) fillSaveDrawer();
 }
 function fillSaveDrawer() {
@@ -1279,7 +1331,7 @@ function zip(files) { // store-only zip; files: [{name, data: Uint8Array}]
 }
 async function download() {
   if (!S.downloads) { toast('Downloads need the Claude app. Claude can also export straight into the repo.'); return; }
-  const e = clean(S.cur), ex = FX.exportPasses(e), size = ex.size;
+  const e = clean(S.cur), ex = FX.exportPasses(e, { sources: S.sources }), size = ex.size;
   const cols = Math.min(ex.frameCount, 8), rows = Math.ceil(ex.frameCount / cols);
   const files = [], atlas = { meta: { effect: EID, size, fps: ex.fps, frames: ex.frameCount, mode: e.canvas.mode, version: S.baseVersion, generator: 'hai-fx studio' }, passes: [] };
   for (const p of ex.passes) {
@@ -1327,12 +1379,53 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'ArrowRight') { setPlaying(false); setFrame(S.frame + 1); }
 });
 
+// ------------------------------------------------------------- effects
+function fillEffects() {
+  const sel = $('fxName'); sel.textContent = '';
+  const list = S.effects.length ? S.effects.slice() : [{ id: EID, name: (S.cur && S.cur.name) || EID }];
+  if (!list.some(x => x.id === EID)) list.unshift({ id: EID, name: (S.cur && S.cur.name) || EID });
+  list.sort((a, b) => a.name.localeCompare(b.name));
+  for (const x of list) sel.append(h('option', { value: x.id, selected: x.id === EID, text: x.name }));
+  sel.append(h('option', { value: '__new', text: 'New effect…' }));
+}
+$('fxName').onchange = e => {
+  const v = e.target.value;
+  if (v === '__new') { e.target.value = EID; return newEffect(); }
+  if (v !== EID) { location.hash = v; location.reload(); }
+};
+async function newEffect() {
+  if (!S.db) { toast('Creating effects needs the Claude app.'); return; }
+  const all = {}; for (const t of S.templates) Object.assign(all, t.sources || {});
+  const srcMap = await decodeSources(Object.entries(all).map(([sid, data]) => ({ sid, data, name: sid })), true);
+  openCompare({
+    title: 'New effect', question: '',
+    options: S.templates.map((t, i) => ({ key: String(i + 1), label: t.name, effect: FX.normalizeEffect(t.effect), srcMap })),
+    onPick: async cell => {
+      const t = cell && S.templates[+cell.key - 1];
+      if (!t) return;
+      let id = t.id.replace(/[^a-z0-9-]/g, '') || 'effect';
+      if (S.effects.some(x => x.id === id)) id += '-' + Date.now().toString(36).slice(-4);
+      const col = `effects/${id}/items`, at = now();
+      const effect = Object.assign({}, t.effect, { id, name: t.name });
+      try {
+        for (const [sid, data] of Object.entries(t.sources || {})) await S.db.doc(`${col}/src-${sid}`).set({ kind: 'source', sid, name: sid, data, createdAt: at, t: at, author: 'you' });
+        await S.db.doc(`${col}/v0001`).set({ kind: 'version', version: 1, effect, savedBy: 'you', message: 'From template: ' + t.name, savedAt: at, t: at, changes: [] });
+        await S.db.doc(`effects/${id}`).set({ kind: 'index', name: t.name, template: t.id, createdAt: at, t: at });
+        location.hash = id; location.reload();
+      } catch (e) { toast('Could not create the effect: ' + (e.code || e.message)); }
+    },
+  });
+}
+
 // ------------------------------------------------------------------ boot
 function banner(content) { const b = $('banner'); b.textContent = ''; if (!content) { b.hidden = true; return; } b.append(...[].concat(content)); b.hidden = false; }
 async function boot() {
-  let starter = null;
-  try { starter = await (await fetch(EID + '.json')).json(); } catch (e) {}
+  try { S.templates = await (await fetch('templates.json')).json(); } catch (e) { S.templates = []; }
+  const tpl = S.templates.find(t => t.id === EID);
+  let starter = tpl ? tpl.effect : null;
+  if (tpl && tpl.sources) { await decodeSources(Object.entries(tpl.sources).map(([sid, data]) => ({ sid, data, name: sid }))); }
   if (!starter) starter = { id: EID, name: EID, layers: [{ id: 'flash', type: 'glow' }] };
+  fillEffects();
   S.base = FX.normalizeEffect(starter); S.cur = FX.normalizeEffect(starter); S.baseVersion = 0;
   fillBgSelect(); renderTabs(); updateHeader(); layoutStage(); rerender();
   requestAnimationFrame(tick);
@@ -1346,6 +1439,10 @@ async function boot() {
   updateHeader(); renderTabs();
   const loading = setTimeout(() => banner(h('span', { text: 'Still connecting to saved versions. Showing the starting point until they load.' })), 10000);
   let seenReply = store.get('reply.' + EID) || '';
+  db.collection('effects').limit(500).onSnapshot(q => {
+    S.effects = q.docs.map(d => { const x = d.data(); return { id: d.id, name: x.name || (x.effect && x.effect.name) || d.id }; });
+    fillEffects();
+  }, () => {});
   db.collection(ITEMS).limit(1000).onSnapshot(q => {
     if (!q.metadata.fromCache) { clearTimeout(loading); if (!S.remotePending) banner(null); }
     const all = q.docs.map(d => Object.assign({ id: d.id }, d.data()));
@@ -1364,6 +1461,11 @@ async function boot() {
     S.refs = all.filter(i => i.kind === 'ref' && ASSET_RE.test(String(i.assetId || ''))).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     S.versions = all.filter(i => i.kind === 'version').sort((a, b) => b.version - a.version);
     S.draft = all.find(i => i.kind === 'draft') || null;
+    const srcItems = all.filter(i => i.kind === 'source' && /^data:image\//.test(i.data || ''));
+    if (srcItems.map(i => i.id + i.t).join() !== S.sourceItems.map(i => i.id + i.t).join()) {
+      S.sourceItems = srcItems;
+      decodeSources(srcItems).then(() => { rerender(); if (S.tab === 'refs' || S.tab === 'edit') renderTabs(); });
+    }
     const last = replies[replies.length - 1];
     if (last && tOf(last) > seenReply) {
       seenReply = tOf(last); store.set('reply.' + EID, seenReply);

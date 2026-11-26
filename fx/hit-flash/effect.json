@@ -1,0 +1,54 @@
+{
+  "id": "hit-flash",
+  "name": "Hit flash + outline",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 48,
+    "fps": 30,
+    "frames": 20,
+    "mode": "smooth",
+    "dither": true,
+    "alphaCut": 0.5,
+    "loop": true,
+    "tile": false
+  },
+  "palette": {
+    "white": "#ffffff",
+    "hot": "#ffcf5c",
+    "arc": "#7fd4ff",
+    "ink": "#1a1420"
+  },
+  "layers": [
+    {
+      "id": "crate",
+      "type": "sprite",
+      "label": "Crate",
+      "params": {
+        "source": "crate",
+        "flash": 0.9,
+        "flashes": 2
+      }
+    },
+    {
+      "id": "outline",
+      "type": "outline",
+      "label": "Outline",
+      "params": {
+        "source": "crate",
+        "width": 2,
+        "colorLine": "hot",
+        "pulse": 0.6
+      }
+    }
+  ],
+  "checks": [
+    {
+      "id": "loop",
+      "label": "Loops seamlessly",
+      "metric": "loopJump",
+      "op": "<=",
+      "value": 1.5
+    }
+  ]
+}
