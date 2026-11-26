@@ -10,4 +10,4 @@ Layered game effects for Godot and Defold, built collaboratively between a human
   real headless engine builds
 - `engine_tests/`: the original headless-engine experiments and findings
 
-See `CLAUDE.md` for the working agreement and data layout.
+See `CLAUDE.md` for the working agreement and data layout, and `ROADMAP.md` for what comes next.
