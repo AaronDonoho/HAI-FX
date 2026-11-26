@@ -6,3 +6,5 @@ engine_tests/godot/.godot/
 engine_tests/out*/
 engine_tests/dfo_*/
 engine_tests/*.png
+build/
+tools/node_modules/

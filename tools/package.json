@@ -1,0 +1,6 @@
+{
+  "name": "hai-fx-tools",
+  "private": true,
+  "type": "module",
+  "dependencies": { "pngjs": "7.0.0" }
+}
