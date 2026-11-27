@@ -1001,10 +1001,14 @@
         if (p.type === 'ease') return `${p.key}=${p.def}~ease`;
         if (p.type === 'choice') return `${p.key}=${p.def}{${(p.options || []).map((o, i) => i + ':' + o).join('|')}}`;
         if (p.type === 'source') return `${p.key}=sprite`;
+        if (p.type === 'code') return `${p.key}=glsl`;
+        if (p.type === 'text') return `${p.key}=text`;
         return `${p.key}=${p.def}[${p.min}..${p.max}${p.unit ? ' ' + p.unit : ''}]`;
       });
       lines.push(`${name} (${T.engine === 'gpu' ? 'gpu' : 'cpu'}, ${T.blend}${T.readsBelow ? ', reads below' : ''}): ${ps.join(' ')}`);
     }
+    if (Object.values(TYPES).some(T => T.params.some(p => p.key === 'wrap')) && !only) lines.push('gpu layers that do not read below also have wrap=0{0:Off|1:Around a circle} wrapRadius=0.55[0..1.5 u] wrapWidth=0.4[0.05..1.5 u] wrapTurn=0[-180..180 °] wrapSpin=0[-4..4 turns]: bends the layer around a ring (left-right runs clockwise from the top, top-bottom runs outside-in); e.g. a radial waveform, a ring of lightning, a vortex of clouds');
+    for (const [name, T] of Object.entries(TYPES)) if (T.guide && (!only || only.includes(name))) lines.push(T.guide);
     lines.push('every layer also has areaTop=-1 areaBottom=1 areaLeft=-1 areaRight=1 [-1..1 u] areaSoft=0[0..0.5 u]: confines it to that rectangle (a replace layer shows what is below outside it)');
     return lines.join('\n');
   }

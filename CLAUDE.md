@@ -40,7 +40,9 @@ the engines). It catches regressions that single-effect checks miss.
   `core/`) and `templates.json` (from `studio/`). The artifact's security policy blocks `fetch()` of
   `data:` URLs: decode images through `<img>` (sprites were invisible in the Studio until v8).
   Capabilities: `db`, `assets`, `downloads`, `comments` (Send to Claude), `sample` (Ask Claude).
-  Open a given effect with `#<effect-id>`. Layout is built for the narrow side panel: the
+  Open a given effect with `#<effect-id>` (`#<id>?ask=<text>` runs that ask once it loads). **New**
+  in the header: describe it (creates a blank effect and in-page Claude builds it), start blank, or
+  pick a template. Layout is built for the narrow side panel: the
   preview stays pinned while controls scroll.
 - **Studio database**: ONE collection per effect, `effects/<id>/items`, one document per item.
   Every item has `kind` and `t` (ISO time, updated on every write). Kinds:
@@ -70,6 +72,13 @@ the engines). It catches regressions that single-effect checks miss.
   [path-traced light: 2D scene with soft shadows, emissive pixels and one bounce, or 2.5D relief
   with sun, sky occlusion and a point light]). The same files run
   in the Studio and, through `tools/engine.mjs` (headless Chromium), in every tool.
+  GPU layers that don't read below also have **Wrap: around a circle** (`wrap`, `wrapRadius`,
+  `wrapWidth`, `wrapTurn`, `wrapSpin`): x runs clockwise from the top, y across the ring (radial
+  waveforms, rings of lightning, vortices). **Custom shader** layers (`shader`: `code` = GLSL
+  `vec4 fx(vec2 uv)`, sliders `a-d` named by `names`, colours `colorA-C`) are how a new look gets made
+  without a new type: Ask writes them, the Studio compiles them (`FXGPU.check`) and asks once more
+  with the compiler's errors, and they export like any GPU layer. The catalog prints their rules.
+  Verify one with `fx.mjs runtime` before shipping: Godot is stricter than WebGL.
   Every layer also has an **Area** (`areaTop/Bottom/Left/Right`, `areaSoft`, in u): sky above a
   waterline, a bar, a window. `gradient` (linear/radial, three colours, opacity ramp) makes skies, depth
   and vignettes. A colour param naming a missing palette entry gets a default entry (never magenta).

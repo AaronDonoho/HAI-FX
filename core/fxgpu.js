@@ -99,6 +99,7 @@ vec4 src_${name}(vec2 st) {
 `;
 
   const P = (key, label, type, def, extra) => Object.assign({ key, label, type, def }, extra || {});
+  const NOUNI = t => t === 'code' || t === 'text'; // params that are not shader uniforms
   const T = 'Timing', SH = 'Shape', MO = 'Motion', LK = 'Look', CO = 'Color', SR = 'Sprite';
   const SPRITE = [P('source', 'Sprite', 'source', '', { group: SR }), P('scale', 'Scale', 'num', 0.8, { min: 0.1, max: 2, step: 0.01, group: SR }),
     P('offsetX', 'Offset X', 'num', 0, { min: -1, max: 1, step: 0.01, unit: 'u', group: SR }), P('offsetY', 'Offset Y', 'num', 0, { min: -1, max: 1, step: 0.01, unit: 'u', group: SR }),
@@ -184,8 +185,11 @@ float wave(float x, float t) {
   else if (m == 4) { y = fract(ph) * 2.0 - 1.0; }
   else if (m == 5) {
     // a pulse travelling along a springy line: the line ahead is tugged slightly, the line behind rings and settles
-    float s = fract(t * u_speed) * 1.6 - 0.3, d = s - x;
+    // wrapped around a circle the pulse laps forever, so the wake is measured around the ring
+    float s, d;
+    if (u_wrap > 0.5) { s = fract(t * u_speed); d = fract(s - x); } else { s = fract(t * u_speed) * 1.6 - 0.3; d = s - x; }
     y = d > 0.0 ? exp(-u_damping * d) * sin(2.0 * PI * u_stiffness * d + 1.2) * smoothstep(0.0, 0.06, d) / 0.93 : -0.18 * exp(d * 22.0);
+    if (u_wrap > 0.5) y -= 0.18 * exp((d - 1.0) * 22.0);
   } else {
     // plucked string: a standing wave re-plucked each cycle, decaying
     float n = max(1.0, floor(u_freq + 0.5)), q = fract(t * u_speed);
@@ -575,6 +579,27 @@ vec4 fx(vec2 uv) {
 }`,
     },
 
+    shader: {
+      label: 'Custom shader', blend: 'normal', custom: true,
+      cost: p => 4,
+      params: [
+        P('code', 'Shader code', 'code', `// A-D are the sliders (0..1); colours A-C come from the palette.
+vec4 fx(vec2 uv) {
+  vec2 p = P(uv);
+  float r = length(p), t = loopT();
+  float rad = 0.2 + u_a * 0.6 + 0.05 * sin(2.0 * PI * t);
+  float w = 0.01 + u_b * 0.15;
+  float k = exp(-pow((r - rad) / w, 2.0)) + u_d * 0.6 * exp(-pow((r - rad) / (w * 3.0), 2.0));
+  float a = clamp(k, 0.0, 1.0);
+  return vec4(mix(u_colorB, u_colorA, a) * a, a);
+}`, { group: 'Code' }),
+        P('names', 'Slider names', 'text', '', { help: 'Names for sliders A-D, comma separated.', group: 'Code' }),
+        P('a', 'A', 'num', 0.5, { min: 0, max: 1, step: 0.01, group: LK }), P('b', 'B', 'num', 0.5, { min: 0, max: 1, step: 0.01, group: LK }),
+        P('c', 'C', 'num', 0.5, { min: 0, max: 1, step: 0.01, group: LK }), P('d', 'D', 'num', 0.5, { min: 0, max: 1, step: 0.01, group: LK }),
+        P('colorA', 'Colour A', 'color', 'white', { group: CO }), P('colorB', 'Colour B', 'color', 'hot', { group: CO }), P('colorC', 'Colour C', 'color', 'deep', { group: CO }),
+      ],
+      guide: `custom shader layer (type "shader"): params.code is GLSL ES 3.00 defining vec4 fx(vec2 uv), returning PREMULTIPLIED rgba (rgb already multiplied by alpha). uv is 0..1, y down; P(uv) gives -1..1 (u). Uniforms: u_a u_b u_c u_d (sliders 0..1; name them in params.names, e.g. "Radius,Width,Speed,Glow"), u_colorA u_colorB u_colorC (vec3), u_time (s), u_frame, u_frames, u_phase (0..1 over the effect), u_size (px), u_seed, u_loop, u_tile. Library: PI, h21(vec2)->0..1 hash, h22(vec2)->vec2, vnoise(vec2 p, vec2 per), fbm(vec2 p, vec2 per, int octaves), ridge(p, per, oct), worley(p, per), PER(cells) (per = PER(n) tiles when the effect tiles, else vec2(4096.0)), rot2(angle)->mat2, sdSeg(p, a, b), ease(id, t), loopT() (phase if looping else seconds; use whole-number multiples of 2*PI*loopT() to loop seamlessly), lumi(vec3). Rules (or Godot/Defold builds break): float literals everywhere (1.0 not 1, vec2(1.0, 0.0)), no implicit int/float mixing, no global variables except const, no texture reads, hash with h21/h22 (never fract(sin(...))), loops with constant bounds (break early for variable counts). Helper functions may be defined above fx.`,
+    },
     gradient: {
       label: 'Gradient', blend: 'normal',
       cost: p => 0,
@@ -834,11 +859,13 @@ vec4 fx(vec2 uv) {
     for (const p of def.params) {
       if (p.type === 'color') out.push(`uniform vec3 u_${p.key};`);
       else if (p.type === 'source') out.push(`uniform sampler2D s_${p.key};`, `uniform vec2 u_${p.key}_size;`, `uniform vec4 u_${p.key}_grid;`);
-      else out.push(`uniform float u_${p.key};`);
+      else if (!NOUNI(p.type)) out.push(`uniform float u_${p.key};`);
     }
     return out.join('\n');
   }
-  function fragmentSource(name) {
+  const glslOf = (def, layer) => (def.custom ? String((layer && layer.params && layer.params.code) || def.params.find(p => p.key === 'code').def) : def.glsl);
+  const hasWrap = def => def.params.some(p => p.key === 'wrap');
+  function fragmentSource(name, layer) {
     const def = TYPES[name];
     const srcs = def.params.filter(p => p.type === 'source').map(p => SRC(p.key)).join('\n');
     return `#version 300 es
@@ -849,14 +876,31 @@ ${uniformDecls(def)}
 out vec4 o_color;
 ${LIB}
 ${srcs}
-${def.glsl}
+${glslOf(def, layer)}
+${hasWrap(def) ? WRAP : ''}
 void main() {
   vec2 uv = vec2(gl_FragCoord.x, u_size - gl_FragCoord.y) / u_size;
-  o_color = fx(uv);
+  o_color = fx(${hasWrap(def) ? 'wrapUV(uv)' : 'uv'});
 }`;
   }
-  function program(name) {
-    if (programs[name]) return programs[name];
+  const hashStr = s => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return (h >>> 0).toString(36); };
+  // line numbers in compile errors, counted from the first line of the layer's own code
+  function codeLines(name, layer, msg) {
+    const src = fragmentSource(name, layer), code = glslOf(TYPES[name], layer), at = src.slice(0, src.indexOf(code)).split('\n').length - 1;
+    return String(msg).replace(/^\S+ shader: /, '').replace(/ERROR: \d+:(\d+):/g, (m, n) => `line ${n - at}:`).trim();
+  }
+  const errors = {};
+  // Compile a custom shader's code; returns '' or the compiler's message with line numbers in that code.
+  function check(code) {
+    const layer = { type: 'shader', params: { code } };
+    try { ctx3(8); program('shader', layer); return ''; } catch (e) { return codeLines('shader', layer, e.message); }
+  }
+  function program(name, layer) {
+    const def = TYPES[name], key = def.custom ? name + ':' + hashStr(glslOf(def, layer)) : name;
+    if (programs[key]) { if (programs[key].err) throw new Error(programs[key].err); return programs[key]; }
+    try { return (programs[key] = compile(name, layer)); } catch (e) { if (def.custom) programs[key] = { err: e.message }; throw e; }
+  }
+  function compile(name, layer) {
     const g = gl;
     const sh = (type, src) => {
       const s = g.createShader(type); g.shaderSource(s, src); g.compileShader(s);
@@ -865,13 +909,13 @@ void main() {
     };
     const pr = g.createProgram();
     g.attachShader(pr, sh(g.VERTEX_SHADER, '#version 300 es\nin vec2 p; void main(){ gl_Position = vec4(p, 0.0, 1.0); }'));
-    g.attachShader(pr, sh(g.FRAGMENT_SHADER, fragmentSource(name)));
+    g.attachShader(pr, sh(g.FRAGMENT_SHADER, fragmentSource(name, layer)));
     g.bindAttribLocation(pr, 0, 'p');
     g.linkProgram(pr);
     if (!g.getProgramParameter(pr, g.LINK_STATUS)) throw new Error(`${name} link: ${g.getProgramInfoLog(pr)}`);
     const u = {}; const n = g.getProgramParameter(pr, g.ACTIVE_UNIFORMS);
     for (let i = 0; i < n; i++) { const info = g.getActiveUniform(pr, i); u[info.name] = g.getUniformLocation(pr, info.name); }
-    return (programs[name] = { pr, u });
+    return { pr, u };
   }
   function texFromRGBA(key, data, w, h, isFloat) {
     const g = gl;
@@ -918,7 +962,10 @@ void main() {
   // Render one GPU layer for one frame into buf (premultiplied Float32, y down).
   function render(effect, layer, p, ctx, buf) {
     const def = TYPES[layer.type], g = ctx3(ctx.size);
-    const { pr, u } = program(layer.type);
+    let prog;
+    try { prog = program(layer.type, layer); delete errors[layer.id]; }
+    catch (e) { if (!def.custom) throw e; errors[layer.id] = codeLines(layer.type, layer, e.message); buf.fill(0); return; } // a broken custom shader draws nothing
+    const { pr, u } = prog;
     const S = ctx.size, tg = target(S);
     g.bindFramebuffer(g.FRAMEBUFFER, tg.fb); g.viewport(0, 0, S, S);
     g.disable(g.BLEND); g.clearColor(0, 0, 0, 0); g.clear(g.COLOR_BUFFER_BIT);
@@ -948,7 +995,7 @@ void main() {
         if (u['u_' + sp.key + '_size']) g.uniform2f(u['u_' + sp.key + '_size'], src ? src.w / gr.cols : 1, src ? src.h / gr.rows : 1);
         if (u['u_' + sp.key + '_grid']) g.uniform4f(u['u_' + sp.key + '_grid'], gr.cols, gr.rows, gr.frames, 0);
       } else if (sp.type === 'ease') set1('u_' + sp.key, Math.max(0, EASES.indexOf(v)));
-      else set1('u_' + sp.key, +v || 0);
+      else if (!NOUNI(sp.type)) set1('u_' + sp.key, +v || 0);
     }
     g.drawArrays(g.TRIANGLES, 0, 3);
     if (floatOK) g.readPixels(0, 0, S, S, g.RGBA, g.FLOAT, tg.read);
@@ -965,7 +1012,25 @@ void main() {
   const AREA_P = [['areaTop', 'Top', -1], ['areaBottom', 'Bottom', 1], ['areaLeft', 'Left', -1], ['areaRight', 'Right', 1]]
     .map(([k, l, d]) => P(k, l, 'num', d, { min: -1, max: 1, step: 0.01, unit: 'u', group: 'Area', common: true }))
     .concat([P('areaSoft', 'Edge softness', 'num', 0, { min: 0, max: 0.5, step: 0.01, unit: 'u', group: 'Area', common: true })]);
-  for (const d of Object.values(TYPES)) if (!d.params.some(p => p.key === 'areaTop')) d.params = d.params.concat(AREA_P);
+  // Layers that don't read below can be wrapped around a circle: x runs around it, y across a band.
+  const WRAP_P = [
+    P('wrap', 'Wrap', 'choice', 0, { options: ['Off', 'Around a circle'], help: 'Bends the layer around a ring: left-right runs around it, up-down runs across it. Seamless when the layer repeats a whole number of times across, or tiles.', group: 'Wrap', common: true }),
+    P('wrapRadius', 'Ring radius', 'num', 0.55, { min: 0, max: 1.5, step: 0.01, unit: 'u', group: 'Wrap', common: true }),
+    P('wrapWidth', 'Ring width', 'num', 0.4, { min: 0.05, max: 1.5, step: 0.01, unit: 'u', help: 'How much of the layer\'s height (top to bottom) fits across the ring.', group: 'Wrap', common: true }),
+    P('wrapTurn', 'Rotate', 'num', 0, { min: -180, max: 180, step: 1, unit: '°', group: 'Wrap', common: true }),
+    P('wrapSpin', 'Spin', 'int', 0, { min: -4, max: 4, help: 'Whole turns over the effect, so loops stay seamless.', group: 'Wrap', common: true }),
+  ];
+  for (const d of Object.values(TYPES)) {
+    if (!d.readsBelow && !d.params.some(p => p.key === 'wrap')) d.params = d.params.concat(WRAP_P);
+    if (!d.params.some(p => p.key === 'areaTop')) d.params = d.params.concat(AREA_P);
+  }
+  const WRAP = `
+vec2 wrapUV(vec2 uv) {
+  if (u_wrap < 0.5) return uv;
+  vec2 p = P(uv);
+  float a = atan(p.y, p.x) - (u_wrapTurn / 180.0 + 2.0 * u_wrapSpin * u_phase) * PI;
+  return vec2(fract(a / (2.0 * PI) + 0.25), (u_wrapRadius - length(p)) / max(0.01, u_wrapWidth) * 0.5 + 0.5);
+}`;
   const AREA = `
 float areaMask(vec2 uv) {
   if (u_areaTop <= -1.0 && u_areaBottom >= 1.0 && u_areaLeft <= -1.0 && u_areaRight >= 1.0) return 1.0;
@@ -979,5 +1044,7 @@ float areaMask(vec2 uv) {
     FX.__gpuInstalled = true;
   }
   function available() { try { ctx3(8); return true; } catch (e) { return false; } }
-  return { TYPES, LIB, SRC, EASES, AREA, install, available, fragmentSource, render };
+  // the call a shader wrapper makes: fx() through the wrap when the type has one
+  const fxCall = (def, uv) => `fx(${hasWrap(def) ? `wrapUV(${uv})` : uv})`;
+  return { TYPES, LIB, SRC, EASES, AREA, WRAP, NOUNI, glslOf, hasWrap, fxCall, check, errors, install, available, fragmentSource, render };
 });

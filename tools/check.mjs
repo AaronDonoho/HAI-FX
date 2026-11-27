@@ -33,7 +33,7 @@ if (!fast) {
   const plain = Object.keys(GPU.TYPES).filter(t => !GPU.TYPES[t].readsBelow);
   const needsSprite = t => GPU.TYPES[t].params.some(p => p.type === 'source');
   const A = { id: 'check-all', name: 'check all', seed: 3, canvas: { frames: 6, loop: true }, palette: pal,
-    layers: plain.map((t, i) => L(`${t}`, t, Object.assign(needsSprite(t) ? { source: i % 2 ? 'slime' : 'crate', scale: 0.35, offsetX: ((i % 4) - 1.5) * 0.45, offsetY: (Math.floor(i / 4) - 1) * 0.55 } : {}, t === 'water' || t === 'clouds' ? { opacity: 0.35 } : {}))) };
+    layers: plain.map((t, i) => L(`${t}`, t, Object.assign(needsSprite(t) ? { source: i % 2 ? 'slime' : 'crate', scale: 0.35, offsetX: ((i % 4) - 1.5) * 0.45, offsetY: (Math.floor(i / 4) - 1) * 0.55 } : {}, t === 'water' || t === 'clouds' ? { opacity: 0.35 } : {}))).concat([L('ring', 'waveform', { mode: 5, wrap: 1, wrapRadius: 0.5, wrapWidth: 0.3, wrapSpin: 1, areaLeft: -0.8, areaSoft: 0.05 })]) };
   const B = { id: 'check-below', name: 'check below', seed: 3, canvas: { frames: 6, loop: true }, palette: pal,
     layers: [L('crate', 'sprite', { source: 'crate', scale: 0.5 }), ...Object.keys(GPU.TYPES).filter(t => GPU.TYPES[t].readsBelow).map(t => L(t, t, t === 'pathlight' ? { samples: 12, steps: 16 } : {}))] };
   for (const [eff, engines] of [[A, 'godot,defold'], [B, 'godot']]) {

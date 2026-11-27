@@ -146,6 +146,11 @@ select.tin { padding: 3px 4px; }
 .param { display: grid; grid-template-columns: 98px minmax(0, 1fr) 62px; gap: 8px; align-items: center; padding: 3px 0; }
 .param label { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .param label.changed { color: var(--warn); }
+.param.stack { display: block; }
+.param.stack label { display: block; margin-bottom: 4px; }
+.tin.code { width: 100%; font: 12px/1.45 var(--f-mono); white-space: pre; overflow: auto; resize: vertical; tab-size: 2; }
+.codeerr { color: var(--bad); font: 12px var(--f-mono); white-space: pre-wrap; flex: 1 1 200px; }
+.newfx { flex-basis: 100%; display: grid; gap: 8px; max-width: 80ch; }
 .param input[type="range"] { width: 100%; accent-color: var(--accent); min-width: 0; }
 .param .num { width: 100%; text-align: right; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; font: 12px var(--f-mono); }
 .param .wide { grid-column: 2 / 4; display: flex; gap: 6px; align-items: center; min-width: 0; }
@@ -215,6 +220,7 @@ input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 3px
   <header class="top gut" id="top">
     <div class="mark">HAI<span>·FX</span></div>
     <select class="fxname" id="fxName" aria-label="Effect"></select>
+    <button class="btn small" id="newBtn" title="Start a new effect">New</button>
     <span class="pill" id="verPill"><span class="dot"></span><span>Loading…</span></span>
     <div class="spacer"></div>
     <button class="btn claude" id="sendBtn" title="Wake Claude in your chat to do a full round on this effect">Send to Claude</button>
@@ -292,7 +298,10 @@ input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 3px
 (function () {
 'use strict';
 const FX = window.FXCore;
-const EID = (location.hash || '').replace('#', '').replace(/[^a-z0-9_-]/gi, '') || 'explosion';
+const HASH = (location.hash || '').replace('#', '').split('?');
+const EID = HASH[0].replace(/[^a-z0-9_-]/gi, '') || 'explosion';
+// "#id?ask=…": a new effect described in words; the ask runs once the effect has loaded
+let PENDING_ASK = (() => { try { return new URLSearchParams(HASH[1] || '').get('ask') || ''; } catch (e) { return ''; } })();
 const $ = id => document.getElementById(id);
 const BGS = { dark: ['Dark', '#14121a'], black: ['Black', '#000000'], mid: ['Mid grey', '#5b5866'], light: ['Light', '#d9d6e0'], checker: ['Checker', null] };
 const QUICK = ['too fast', 'too slow', 'too bright', 'too dim', 'too big', 'too small', 'colour off', 'too busy', 'needs more', 'love this'];
@@ -640,6 +649,7 @@ function renderMetrics() {
   const m = S.metrics; if (!m) return;
   const pass = m.checks.filter(c => c.pass).length;
   const sum = $('summary'); sum.textContent = '';
+  if (!S.cur.layers.length) { sum.append(h('span', { class: 'muted', text: 'Empty: add a layer or ask Claude' })); return; }
   sum.append(h('span', { class: 'mono', text: `peak f${m.summary.peakFrame} · fades f${m.summary.fadeFrame}` }),
     h('span', { class: 'row', style: 'gap:3px' }, m.checks.map(c => h('span', { class: 'dot ' + (c.pass ? 'ok' : 'bad'), title: c.label }))),
     h('span', { class: 'hide-sm', text: `${pass}/${m.checks.length} checks` }));
@@ -697,6 +707,17 @@ function paramRow(spec, value, baseValue, onSet, onLive) {
   } else if (spec.type === 'color') {
     row.append(h('div', { class: 'wide' }, h('span', { class: 'swatch', style: `display:inline-block;background:${S.cur.palette[value] || '#f0f'}` }),
       h('select', { class: 'tin', 'aria-label': spec.label, onchange: e => onSet(e.target.value) }, Object.keys(S.cur.palette).map(k => h('option', { value: k, selected: k === value, text: k })))));
+  } else if (spec.type === 'code') {
+    const ta = h('textarea', { class: 'tin code', rows: 14, spellcheck: 'false', autocapitalize: 'off', 'aria-label': spec.label });
+    ta.value = value || '';
+    const err = h('div', { class: 'codeerr', text: (S.sel && FXGPU.errors[S.sel]) || '' });
+    const apply = () => { const msg = FXGPU.check(ta.value); err.textContent = msg; if (!msg) onSet(ta.value); };
+    ta.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); apply(); } });
+    row.classList.add('stack');
+    row.append(ta, h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: apply }, 'Apply'), err));
+  } else if (spec.type === 'text') {
+    const inp = h('input', { class: 'tin', 'aria-label': spec.label, onchange: e => onSet(e.target.value) }); inp.value = value || '';
+    row.append(h('div', { class: 'wide', style: 'grid-column: span 2' }, inp));
   } else {
     const step = spec.step || 1;
     const range = h('input', { type: 'range', min: spec.min, max: spec.max, step, value, 'aria-label': spec.label });
@@ -761,8 +782,12 @@ function tabEdit(body) {
     // common settings (Area) stay folded until used
     const folded = specs.every(p => p.common) && specs.every(p => l.params[p.key] === p.def);
     const sec = folded ? h('details', { class: 'sec' }, h('summary', { text: g })) : h('div', { class: 'sec' }, h('h3', { text: g }));
-    for (const spec of specs) sec.append(paramRow(spec, l.params[spec.key], baseL ? baseL.params[spec.key] : undefined,
+    const names = l.type === 'shader' ? String(l.params.names || '').split(',').map(x => x.trim()) : [];
+    for (const spec0 of specs) {
+      const ni = ['a', 'b', 'c', 'd'].indexOf(spec0.key), spec = ni >= 0 && names[ni] ? Object.assign({}, spec0, { label: names[ni] }) : spec0;
+      sec.append(paramRow(spec, l.params[spec.key], baseL ? baseL.params[spec.key] : undefined,
       v => { l.params[spec.key] = v; edited(); }, v => { l.params[spec.key] = v; rerender(); }));
+    }
     body.append(sec);
   }
   const sel = h('select', { class: 'tin', style: 'flex:1', 'aria-label': 'Setting to explore' }, T.params.map(p => h('option', { value: p.key, text: p.label })));
@@ -1052,7 +1077,7 @@ function openCompare(cfg) {
     h('div', { class: 'ohead gut' }, h('h3', { text: cfg.title }), h('div', { class: 'spacer' }),
       h('button', { class: 'btn small', onclick: () => setPlaying(!S.playing) }, 'Play / pause'),
       h('button', { class: 'btn ghost', onclick: closeOverlay }, 'Close'),
-      cfg.question ? h('p', { text: cfg.question }) : null),
+      cfg.question ? h('p', { text: cfg.question }) : null, cfg.extra || null),
     h('div', { class: 'obody gut' }, grid),
     h('div', { class: 'ofoot gut' }, comment, useBtn, cfg.proposal ? h('button', { class: 'btn', onclick: () => finishCompare(ov, comment.value, true) }, 'None of these') : null,
       cfg.handoff ? h('button', { class: 'btn claude', onclick: () => { closeOverlay(); handoff(cfg.handoff + (comment.value ? '\n' + comment.value : '')); } }, 'None fit: ask Claude to build it') : null));
@@ -1164,6 +1189,8 @@ function sanitizePatch(patch, eff) {
     if (spec.type === 'ease') { if (FX.EASE[v]) out[k] = v; }
     else if (spec.type === 'color') { if (typeof v === 'string' && pal[v]) out[k] = v; }
     else if (spec.type === 'source') { if (typeof v === 'string' && S.sources[v]) out[k] = v; }
+    else if (spec.type === 'code') { if (typeof v === 'string' && v.length < 12000) out[k] = v; }
+    else if (spec.type === 'text') { if (typeof v === 'string') out[k] = v.slice(0, 120); }
     else if (typeof v === 'number' && isFinite(v)) { let x = Math.min(spec.max, Math.max(spec.min, v)); if (spec.type !== 'num') x = Math.round(x); out[k] = x; }
   }
   return out;
@@ -1212,9 +1239,10 @@ function askPrompt(ask) {
     m ? 'Measured now: brightness peaks at frame ' + m.peakFrame + ', visible until frame ' + m.fadeFrame + ', reaches ' + m.maxRadius + 'u, max coverage ' + Math.round(m.maxCoverage * 100) + '%.' : '',
     S.refs.length ? 'The artist\'s reference images are captioned: ' + S.refs.map(r => JSON.stringify(refName(r))).join('; ') : '',
     'The artist asks: ' + JSON.stringify(ask),
-    'Give three different ways to do it, from conservative to bold. You may change parameters, add layers of any type above (e.g. sparks with negative gravity for rising particles), remove layers, and reorder them (e.g. move a layer to the bottom to make it a background). Prefer building the look from existing layer types over saying it cannot be done.',
-    'Only if no combination of these layer types can deliver what was asked, also fill "cannot" with one sentence naming the missing capability (a new layer type or behaviour) so a developer can build it; still give your best approximations as options.',
-    'Reply with only JSON: {"understood": "one sentence restating the ask in concrete terms", "cannot": "" , "options": [{"label": "under 60 characters", "patch": {"layerId.param": value, "palette.slot": "#rrggbb"}, "add": [{"type": "sparks", "id": "bubbles", "label": "Bubbles", "params": {"count": 30}, "position": "top" | "bottom", "below": "layerId", "above": "layerId"}], "remove": ["layerId"], "move": [{"id": "layerId", "position": "bottom"}]}, ...three options]}. Omit add/remove/move when unused.',
+    e.layers.length ? '' : 'The effect is empty: build it from scratch with added layers.',
+    'Give three different ways to do it, from conservative to bold. You may change parameters, add layers of any type above (e.g. sparks with negative gravity for rising particles), remove layers, and reorder them (e.g. move a layer to the bottom to make it a background). Layers can be confined to an area and gpu layers wrapped around a circle. When no layer type draws the shape or motion asked for, write a custom shader layer (type "shader", rules above): that is how new looks get made here, so do it rather than settle for a weak approximation; name its sliders in params.names.',
+    'Only if even a custom shader cannot deliver it (it would need to distort the layers below it, a 3D model, or sound), also fill "cannot" with one sentence naming the missing capability so a developer can build it; still give your best approximations as options.',
+    'Reply with only JSON: {"understood": "one sentence restating the ask in concrete terms", "cannot": "" , "options": [{"label": "under 60 characters", "patch": {"layerId.param": value, "palette.slot": "#rrggbb"}, "add": [{"type": "sparks", "id": "bubbles", "label": "Bubbles", "params": {"count": 30}, "position": "top" | "bottom", "below": "layerId", "above": "layerId"}, {"type": "shader", "id": "ring", "params": {"code": "vec4 fx(vec2 uv) { ... }", "names": "Radius,Width", "a": 0.4}}], "remove": ["layerId"], "move": [{"id": "layerId", "position": "bottom"}]}, ...three options]}. Omit add/remove/move when unused.',
   ].filter(Boolean).join('\n\n');
 }
 // Hand a request the in-page Claude cannot do to the Claude session that builds new capabilities.
@@ -1232,11 +1260,24 @@ async function runAsk() {
   $('askBtn').textContent = 'Stop'; $('askStatus').textContent = 'Claude is thinking… (usually 20–60 s)';
   const started = clean(S.cur);
   try {
-    const res = await S.sample.json(askPrompt(ask), { signal: ctl.signal, modelTier: 'default', cache: false });
-    const cannot = res && typeof res.cannot === 'string' ? res.cannot.trim().slice(0, 400) : '';
-    const opts = (res && Array.isArray(res.options) ? res.options : []).slice(0, 4)
-      .map((o, i) => { const r = applyAskOption(started, o || {}); return r && { key: 'BCDE'[i], label: String(o.label || 'Option ' + (i + 1)).slice(0, 80), effect: r.effect, ops: r.ops }; })
+    const prompt = askPrompt(ask);
+    let res = await S.sample.json(prompt, { signal: ctl.signal, modelTier: 'default', cache: false });
+    const build = r => (r && Array.isArray(r.options) ? r.options : []).slice(0, 4)
+      .map((o, i) => { const x = applyAskOption(started, o || {}); return x && { key: 'BCDE'[i], label: String(o.label || 'Option ' + (i + 1)).slice(0, 80), effect: x.effect, ops: x.ops }; })
       .filter(Boolean);
+    // custom shaders must compile: one automatic repair round with the compiler's messages, then drop what still fails
+    const broken = list => list.map(o => ({ o, errs: o.effect.layers.filter(l => l.type === 'shader').map(l => [l.id, FXGPU.check(l.params.code)]).filter(x => x[1]) })).filter(x => x.errs.length);
+    let opts = build(res);
+    const bad = broken(opts);
+    if (bad.length) {
+      $('askStatus').textContent = 'Fixing a shader that did not compile…';
+      const fix = prompt + '\n\nYour previous answer: ' + JSON.stringify(res) + '\n\nThese custom shaders failed to compile (line numbers count from the first line of that layer\'s code):\n' +
+        bad.map(b => `option "${b.o.label}": ` + b.errs.map(([id, m]) => `${id}: ${m}`).join('; ')).join('\n') + '\n\nReply with the whole JSON again, fixed.';
+      try { const res2 = await S.sample.json(fix, { signal: ctl.signal, modelTier: 'default', cache: false }); const opts2 = build(res2); if (opts2.length) { res = res2; opts = opts2; } } catch (e) { if (e.code === 'cancelled') throw e; }
+      const still = new Set(broken(opts).map(b => b.o));
+      opts = opts.filter(o => !still.has(o));
+    }
+    const cannot = res && typeof res.cannot === 'string' ? res.cannot.trim().slice(0, 400) : '';
     const handoffText = `Build this for the "${S.cur.name || EID}" effect: ${ask}` + (cannot ? `\nThe in-page Claude says this needs: ${cannot}` : '');
     if (!opts.length) {
       $('askStatus').textContent = '';
@@ -1509,29 +1550,41 @@ $('fxName').onchange = e => {
   if (v === '__new') { e.target.value = EID; return newEffect(); }
   if (v !== EID) { location.hash = v; location.reload(); }
 };
+const BLANK = { canvas: { size: 128, pixelSize: 48, fps: 30, frames: 24, loop: false }, palette: { white: '#ffffff', hot: '#ffd35c', mid: '#e8431a', deep: '#0b3d5c' }, layers: [] };
+async function createEffect(name, effect, sources, message, ask) {
+  let id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'effect';
+  if (id === EID || S.effects.some(x => x.id === id)) id += '-' + Date.now().toString(36).slice(-4);
+  const col = `effects/${id}/items`, at = now();
+  effect = Object.assign({}, clone(effect), { id, name });
+  try {
+    for (const [sid, v] of Object.entries(sources || {})) await S.db.doc(`${col}/src-${sid}`).set(Object.assign({ kind: 'source', sid, name: sid, createdAt: at, t: at, author: 'you' }, typeof v === 'string' ? { data: v } : v));
+    await S.db.doc(`${col}/v0001`).set({ kind: 'version', version: 1, effect, savedBy: 'you', message, savedAt: at, t: at, changes: [] });
+    await S.db.doc(`effects/${id}`).set({ kind: 'index', name, createdAt: at, t: at });
+    location.hash = id + (ask ? '?ask=' + encodeURIComponent(ask) : ''); location.reload();
+  } catch (e) { toast('Could not create the effect: ' + (e.code || e.message)); }
+}
 async function newEffect() {
   if (!S.db) { toast('Creating effects needs the Claude app.'); return; }
   const all = {}; for (const t of S.templates) Object.assign(all, t.sources || {});
   const srcMap = await decodeSources(Object.entries(all).map(([sid, v]) => (typeof v === 'string' ? { sid, data: v, name: sid } : Object.assign({ sid, name: sid }, v))), true);
+  const desc = h('textarea', { class: 'tin', rows: 2, 'aria-label': 'Describe the new effect', placeholder: 'Describe it: "coin pickup sparkle", "a ring of lightning that pulses twice", "rain on a window"' });
+  const nameOf = t => { const w = t.replace(/\s+/g, ' ').trim().split(' ').slice(0, 5).join(' ').slice(0, 32); return w.charAt(0).toUpperCase() + w.slice(1); };
+  const build = h('button', { class: 'btn claude', disabled: !S.sample, title: S.sample ? '' : 'Needs the Claude app', onclick: () => {
+    const t = desc.value.trim(); if (!t) { desc.focus(); return; }
+    build.disabled = true; createEffect(nameOf(t), BLANK, {}, 'New effect: ' + t, t);
+  } }, 'Build it with Claude');
+  const blank = h('button', { class: 'btn', onclick: () => createEffect('Untitled', BLANK, {}, 'Blank effect') }, 'Start blank');
   openCompare({
     title: 'New effect', question: '',
+    extra: h('div', { class: 'newfx' }, desc, h('div', { class: 'row' }, build, blank, h('span', { class: 'muted', text: 'or start from a template:' }))),
     options: S.templates.map((t, i) => ({ key: String(i + 1), label: t.name, effect: FX.normalizeEffect(t.effect), srcMap })),
     onPick: async cell => {
       const t = cell && S.templates[+cell.key - 1];
-      if (!t) return;
-      let id = t.id.replace(/[^a-z0-9-]/g, '') || 'effect';
-      if (S.effects.some(x => x.id === id)) id += '-' + Date.now().toString(36).slice(-4);
-      const col = `effects/${id}/items`, at = now();
-      const effect = Object.assign({}, t.effect, { id, name: t.name });
-      try {
-        for (const [sid, v] of Object.entries(t.sources || {})) await S.db.doc(`${col}/src-${sid}`).set(Object.assign({ kind: 'source', sid, name: sid, createdAt: at, t: at, author: 'you' }, typeof v === 'string' ? { data: v } : v));
-        await S.db.doc(`${col}/v0001`).set({ kind: 'version', version: 1, effect, savedBy: 'you', message: 'From template: ' + t.name, savedAt: at, t: at, changes: [] });
-        await S.db.doc(`effects/${id}`).set({ kind: 'index', name: t.name, template: t.id, createdAt: at, t: at });
-        location.hash = id; location.reload();
-      } catch (e) { toast('Could not create the effect: ' + (e.code || e.message)); }
+      if (t) await createEffect(t.name, t.effect, t.sources, 'From template: ' + t.name);
     },
   });
 }
+$('newBtn').onclick = newEffect;
 
 // ------------------------------------------------------------------ boot
 function banner(content) { const b = $('banner'); b.textContent = ''; if (!content) { b.hidden = true; return; } b.append(...[].concat(content)); b.hidden = false; }
@@ -1611,6 +1664,7 @@ async function boot() {
           h('button', { class: 'btn small primary', onclick: () => { S.cur = FX.normalizeEffect(dr.effect); edited(); banner(null); } }, 'Restore them'),
           h('button', { class: 'btn small', onclick: () => { banner(null); S.cur = FX.normalizeEffect(S.base); saveDraft(); } }, 'Discard')]);
       }
+      if (PENDING_ASK && S.sample) { $('askText').value = PENDING_ASK; PENDING_ASK = ''; try { history.replaceState(null, '', '#' + EID); } catch (e) {} setTimeout(runAsk, 50); }
     }
     renderTabs(); drawPins();
   }, err => { clearTimeout(loading); banner(h('span', { text: 'Saved versions are unavailable right now (' + err.code + '). Edits stay in this tab.' })); });
