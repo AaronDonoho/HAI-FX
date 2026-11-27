@@ -147,6 +147,8 @@ select.tin { padding: 3px 4px; }
 .param label { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .param label.changed { color: var(--warn); }
 .param.stack { display: block; }
+.ramp { display: flex; height: 18px; border-radius: 4px; overflow: hidden; border: 1px solid var(--line); }
+.ramp span { flex: 1; }
 .param.stack label { display: block; margin-bottom: 4px; }
 .tin.code { width: 100%; font: 12px/1.45 var(--f-mono); white-space: pre; overflow: auto; resize: vertical; tab-size: 2; }
 .codeerr { color: var(--bad); font: 12px var(--f-mono); white-space: pre-wrap; flex: 1 1 200px; }
@@ -785,7 +787,12 @@ function tabEdit(body) {
       h('button', { class: 'btn small danger', onclick: () => delLayer(l) }, 'Delete')))));
   const groups = {};
   for (const p of T.params) (groups[p.group] = groups[p.group] || []).push(p);
-  for (const [g, specs] of Object.entries(groups)) {
+  // settings that only apply to some choices (a cycle's sprite vs pattern) show only when they apply
+  const applies = sp => !(sp.when && !Object.entries(sp.when).every(([k, vals]) => vals.includes(Math.round(+l.params[k]))))
+    && !(sp.ramp && +sp.key.slice(1) >= Math.round(+l.params.count || 0));
+  for (const [g, specs0] of Object.entries(groups)) {
+    const specs = specs0.filter(applies);
+    if (!specs.length) continue;
     // common settings (Area) stay folded until used
     const folded = specs.every(p => p.common) && specs.every(p => l.params[p.key] === p.def);
     const sec = folded ? h('details', { class: 'sec' }, h('summary', { text: g })) : h('div', { class: 'sec' }, h('h3', { text: g }));
@@ -795,11 +802,34 @@ function tabEdit(body) {
       sec.append(paramRow(spec, l.params[spec.key], baseL ? baseL.params[spec.key] : undefined,
       v => { l.params[spec.key] = v; edited(); }, v => { l.params[spec.key] = v; rerender(); }));
     }
+    if (g === 'Ramp') sec.prepend(rampTools(l));
     body.append(sec);
   }
   const sel = h('select', { class: 'tin', style: 'flex:1', 'aria-label': 'Setting to explore' }, T.params.map(p => h('option', { value: p.key, text: p.label })));
   body.append(h('div', { class: 'sec' }, h('h3', { text: 'Explore one setting' }),
     h('div', { class: 'row' }, sel, h('button', { class: 'btn small', onclick: () => openExplore(l, sel.value) }, 'Compare 6'))));
+}
+// A palette cycle's ramp: the colours as a strip, and a helper that builds an evenly stepped ramp
+// between two palette colours (new slots named after the layer, e.g. lava1..lava6).
+function rampTools(l) {
+  const n = Math.round(+l.params.count || 2), pal = S.cur.palette, keys = Object.keys(pal);
+  const strip = h('div', { class: 'ramp', title: 'The ramp, in the order colours flow' },
+    Array.from({ length: n }, (_, k) => h('span', { style: `background:${pal[l.params['c' + k]] || '#f0f'}`, title: l.params['c' + k] })));
+  const pick = (v, label) => h('select', { class: 'tin', 'aria-label': label }, keys.map(k => h('option', { value: k, selected: k === v, text: k })));
+  const a = pick(l.params.c0, 'Ramp starts at'), b = pick(l.params['c' + (n - 1)], 'Ramp ends at');
+  const steps = h('input', { class: 'num', type: 'number', min: 2, max: 16, value: n, 'aria-label': 'Colours in the ramp', style: 'width:46px' });
+  const back = h('input', { type: 'checkbox', 'aria-label': 'And back again' });
+  const build = () => {
+    const N = Math.max(2, Math.min(16, Math.round(+steps.value || n))), A = FX.hexToRgb(pal[a.value]), B = FX.hexToRgb(pal[b.value]);
+    const base = l.id.replace(/[^a-z0-9]/gi, '').toLowerCase() || 'ramp';
+    // "and back": A→B→A, so the cycle has no hard jump where it wraps (shimmer, glow pulses)
+    const up = back.checked ? Math.floor(N / 2) + 1 : N;
+    for (let k = 0; k < up; k++) { const t = k / (up - 1); pal[base + (k + 1)] = FX.rgbToHex(A.map((x, i) => x + (B[i] - x) * t)); }
+    for (let k = 0; k < N; k++) l.params['c' + k] = base + (k < up ? k + 1 : 2 * up - k - 1);
+    l.params.count = N; edited();
+  };
+  return h('div', {}, strip, h('div', { class: 'row', style: 'margin:6px 0' }, a, h('span', { class: 'muted', text: '→' }), b, steps,
+    h('label', { class: 'row muted', style: 'gap:4px' }, back, 'and back'), h('button', { class: 'btn small', onclick: build }, 'Build ramp')));
 }
 function effectSettings(body) {
   const c = S.cur.canvas, b = S.base ? FX.normalizeEffect(S.base).canvas : {};
@@ -1048,7 +1078,8 @@ function tabMeasure(body) {
   add('Peak frame', m.summary.peakFrame); add('Fades out by', 'f' + m.summary.fadeFrame);
   add('Max coverage', Math.round(m.summary.maxCoverage * 100) + '%'); add('Max overdraw', m.summary.maxOverdraw.toFixed(1) + '×');
   if (S.cur.canvas.mode === 'pixel') add('Stray pixels', m.summary.orphanPixels);
-  if (m.summary.bakedKB !== undefined) add('Baked size', m.summary.bakedKB + ' KB');
+  if (m.summary.bakedKB !== undefined) add('As flipbooks', m.summary.bakedKB + ' KB');
+  if (m.summary.liveKB !== undefined) add('With live shaders', m.summary.liveKB + ' KB of images');
   if (m.summary.shaderCost) add('Live shader cost', m.summary.shaderCost + ' / px');
   sec.append(facts, h('h3', { text: 'Checks' }));
   for (const c of m.checks) sec.append(h('div', { class: 'check' }, h('span', { class: 'dot ' + (c.pass ? 'ok' : 'bad') }), h('span', { text: c.label }), h('span', { class: 'mono', text: String(c.actual) })));
@@ -1616,7 +1647,8 @@ async function downloadEngines() {
     return new Uint8Array(await (await new Promise(r => c.toBlob(r, 'image/png'))).arrayBuffer());
   };
   try {
-    const { files, summary } = await FXExport.exportRuntime(e, { FX, GPU: FXGPU, sources, png, bake: async sub => FX.exportPasses(sub, { sources: S.sources }) });
+    const framePNG = async (sub, f) => { const r = FX.renderFrame(sub, f, { sources: S.sources }); return png(r.size, r.size, r.data); };
+    const { files, summary } = await FXExport.exportRuntime(e, { FX, GPU: FXGPU, sources, png, framePNG, bake: async sub => FX.exportPasses(sub, { sources: S.sources }) });
     const readme = `${e.name || EID} (v${S.baseVersion}${changes().length ? ' + edits' : ''})\n\nGodot: copy godot/ to res://fx/${e.id || EID}/ and instance ${e.id || EID}.tscn.\nDefold: copy defold/ to /fx/${e.id || EID}/ and add ${e.id || EID}.go to a collection.\n\nGodot layers: ${summary.godot.join(', ')}\nDefold layers: ${summary.defold.join(', ')}\n`;
     const list = Object.entries(files).map(([name, data]) => ({ name, data: typeof data === 'string' ? enc.encode(data) : data }));
     list.push({ name: 'README.txt', data: enc.encode(readme) }, { name: 'effect.json', data: enc.encode(JSON.stringify(e, null, 2)) });

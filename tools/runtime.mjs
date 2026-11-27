@@ -25,6 +25,7 @@ export async function exportRuntime(E, effect, outDir, sourcesDataUrls) {
   const { files, summary } = await X.exportRuntime(effect, {
     FX, GPU, sources,
     bake: sub => E.call('exportPasses', sub), // the engine page already holds the decoded sprites
+    framePNG: async (sub, f) => Buffer.from((await E.frameURL(sub, f, {})).split(',')[1], 'base64'),
     png: async (w, h, rgba) => { const p = new PNG({ width: w, height: h }); p.data = Buffer.from(rgba.buffer ? new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength) : rgba); return PNG.sync.write(p); },
   });
   for (const sub of ['godot', 'defold', 'generic']) fs.rmSync(path.join(outDir, sub), { recursive: true, force: true });

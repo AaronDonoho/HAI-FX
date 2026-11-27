@@ -1,0 +1,60 @@
+{
+  "id": "waterfall",
+  "name": "Waterfall (palette cycling)",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 64,
+    "fps": 12,
+    "frames": 12,
+    "mode": "pixel",
+    "dither": false,
+    "alphaCut": 0.5,
+    "loop": true,
+    "tile": false
+  },
+  "palette": {
+    "wf1": "#0e3a6e",
+    "wf2": "#19548f",
+    "wf3": "#2f7bbf",
+    "wf4": "#5aa6e0",
+    "wf5": "#a6dcf7",
+    "wf6": "#e9f9ff",
+    "rock1": "#2a2430",
+    "rock2": "#3a3440",
+    "rock3": "#5a5466",
+    "foam": "#e8fbff",
+    "white": "#ffffff"
+  },
+  "layers": [
+    {
+      "id": "falls",
+      "type": "cycle",
+      "label": "Waterfall",
+      "params": {
+        "mode": 0,
+        "source": "waterfall",
+        "scale": 1,
+        "count": 6,
+        "speed": 6,
+        "smooth": 0,
+        "tolerance": 0.04,
+        "c0": "wf1",
+        "c1": "wf2",
+        "c2": "wf3",
+        "c3": "wf4",
+        "c4": "wf5",
+        "c5": "wf6"
+      }
+    }
+  ],
+  "checks": [
+    {
+      "id": "loop",
+      "label": "Loops seamlessly",
+      "metric": "loopJump",
+      "op": "<=",
+      "value": 1.5
+    }
+  ]
+}

@@ -215,7 +215,8 @@ inner_padding: 0
 // ---------------------------------------------------------------- export
 // Build the node list for an engine: live shader nodes for GPU layers, baked groups for the rest.
 function plan(e, engine) {
-  const L = e.layers.filter(l => l.enabled && FX.TYPES[l.type]);
+  const C = e.__consumed || new Set(); // layers frozen into a palette cycle's still: not drawn themselves
+  const L = e.layers.filter(l => l.enabled && FX.TYPES[l.type] && !C.has(l.id));
   let cut = -1;
   if (engine === 'defold') L.forEach((l, i) => { if (GPU.TYPES[l.type] && GPU.TYPES[l.type].readsBelow) cut = i; });
   const nodes = [];
@@ -232,14 +233,29 @@ function plan(e, engine) {
 async function bake(io, e, ids) {
   // a sub-effect containing only these layers (everything else disabled)
   const sub = JSON.parse(JSON.stringify(e)); delete sub.__norm;
-  for (const l of sub.layers) l.enabled = ids.includes(l.id);
+  const C = e.__consumed || new Set(), withFrozen = ids.includes(e.__freezeId);
+  for (const l of sub.layers) l.enabled = ids.includes(l.id) || (withFrozen && C.has(l.id) && l.enabled);
   return io.bake(sub);
 }
 
 async function exportRuntime(effect, io) {
   const e = FX.normalizeEffect(effect), id = e.id || 'effect', S = size(e), F = e.canvas.frames;
-  const srcInfo = io.sources || {}; // {sid: {w, h, pixel, png: bytes}}
+  const srcInfo = Object.assign({}, io.sources || {}); // {sid: {w, h, pixel, png: bytes}}
   const files = {}, summary = {};
+  // A palette cycle that freezes the layers below ships them as ONE still image (its index picture),
+  // so they are not exported themselves and the cycle runs live in both engines.
+  const fzi = e.layers.reduce((j, l, i) => (l.enabled && GPU.TYPES[l.type] && GPU.TYPES[l.type].freezesBelow && Math.round(l.params.mode) === 1 ? i : j), -1);
+  if (fzi >= 0) {
+    if (!io.framePNG) throw new Error('exporting a palette cycle of the layers below needs io.framePNG');
+    const fl = e.layers[fzi], sub = JSON.parse(JSON.stringify(e)); delete sub.__norm;
+    sub.layers = sub.layers.slice(0, fzi);
+    const fr = Math.max(0, Math.min(F - 1, Math.round(fl.params.freezeFrame || 0))), sid = 'frozen_' + fl.id;
+    srcInfo[sid] = { w: S, h: S, pixel: e.canvas.mode === 'pixel', png: await io.framePNG(sub, fr) };
+    fl.params.source = sid;
+    Object.defineProperty(e, '__consumed', { value: new Set(e.layers.slice(0, fzi).map(l => l.id)), enumerable: false });
+    Object.defineProperty(e, '__freezeId', { value: fl.id, enumerable: false });
+    summary.frozen = { layer: fl.id, still: `${S}x${S} at frame ${fr}`, replaces: [...e.__consumed] };
+  }
   const put = (p, data) => { files[p] = data; };
 
   // ---- Godot

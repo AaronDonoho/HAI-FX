@@ -61,6 +61,8 @@ parameters, metrics and checks.
 - Done: HAI-FX cloud environment with engines preinstalled; `check.mjs` self-check; `catalog`;
   animated sprite sheets as inputs; normal-map layer; generic export (TexturePacker/Aseprite JSON);
   GIF and WebM previews; bake-size and shader-cost budgets; side-by-side version comparison.
+- Done: Area on every layer, gradient, circle wrap, custom shader layers written by in-page Claude,
+  palette cycling (sprite colours, frozen layers below, generated patterns; one still + ramp at runtime).
 - Next candidates: Defold render-target support so below-reading layers run live there too; normal-map
   and light-map export for engine lighting; more mechanisms (chains, belts, linkages).
 

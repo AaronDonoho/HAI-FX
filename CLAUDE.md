@@ -87,6 +87,11 @@ the engines). It catches regressions that single-effect checks miss.
   without a new type: Ask writes them, the Studio compiles them (`FXGPU.check`) and asks once more
   with the compiler's errors, and they export like any GPU layer. The catalog prints their rules.
   Verify one with `fx.mjs runtime` before shipping: Godot is stricter than WebGL.
+  **Palette cycle** (`cycle`) flows colours through a ramp of palette slots (`c0..c15`, first `count`):
+  from a sprite drawn in ramp colours (others stay as drawn), from a still of the layers below frozen
+  at `freezeFrame` (brightness picks the ramp position; those layers are replaced and export as ONE
+  image), or from bands, waves, rings or noise. `speed` snaps so loops close, `smooth` 0 = hard pixel
+  steps. The Studio has a ramp strip and "Build ramp" (two colours, optional "and back").
   Every layer also has an **Area** (`areaTop/Bottom/Left/Right`, `areaSoft`, in u): sky above a
   waterline, a bar, a window. `gradient` (linear/radial, three colours, opacity ramp) makes skies, depth
   and vignettes. A colour param naming a missing palette entry gets a default entry (never magenta).
@@ -106,8 +111,9 @@ the engines). It catches regressions that single-effect checks miss.
 - **Exports** (`core/fxexport.js`, Studio download and `fx.mjs runtime`): `godot/`, `defold/` and
   `generic/` (one sheet per blend pass + TexturePacker hash JSON + Aseprite JSON + README with draw
   order and blend modes, for any other engine). `fx.mjs render` also writes a GIF preview.
-- **Budgets**: `summary.bakedKB` (uncompressed RGBA of the baked passes) and `summary.shaderCost`
-  (rough texture/noise lookups per pixel for live shaders; each GPU type has a `cost(params)`).
+- **Budgets**: `summary.bakedKB` (uncompressed RGBA as flipbooks), `summary.liveKB` (images the live
+  export ships: baked CPU passes plus frozen stills) and `summary.shaderCost` (rough lookups per pixel
+  for live shaders; each GPU type has a `cost(params)`; layers frozen into a cycle cost nothing).
 
 ## A round in ~6 tool calls
 1. **Read everything**: ArtifactData `query`, collection `effects/<id>/items`, `limit` 1000,

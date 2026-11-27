@@ -579,6 +579,76 @@ vec4 fx(vec2 uv) {
 }`,
     },
 
+    cycle: {
+      label: 'Palette cycle', blend: 'normal', freezesBelow: true,
+      cost: p => (Math.round(p.mode) === 0 ? 2 + (p.count || 6) / 4 : Math.round(p.mode) === 5 ? 5 : 1),
+      params: [
+        P('mode', 'Colours from', 'choice', 2, { options: ['Sprite colours', 'Layers below (frozen)', 'Bands', 'Waves', 'Rings', 'Noise'], help: 'Sprite: pixels drawn in the ramp colours cycle, others stay. Layers below: a still of everything under this layer, its brightness picks the ramp colour (they are replaced). Bands, waves, rings, noise: generated patterns.', group: 'Source' }),
+        P('source', 'Sprite', 'source', '', { group: 'Source', when: { mode: [0] } }),
+        P('scale', 'Scale', 'num', 0.8, { min: 0.1, max: 2, step: 0.01, group: 'Source', when: { mode: [0] } }),
+        P('offsetX', 'Offset X', 'num', 0, { min: -1, max: 1, step: 0.01, unit: 'u', group: 'Source', when: { mode: [0] } }),
+        P('offsetY', 'Offset Y', 'num', 0, { min: -1, max: 1, step: 0.01, unit: 'u', group: 'Source', when: { mode: [0] } }),
+        P('rotation', 'Rotation', 'angle', 0, { min: -180, max: 180, step: 1, unit: '°', group: 'Source', when: { mode: [0] } }),
+        P('tolerance', 'Colour match', 'num', 0.06, { min: 0, max: 0.5, step: 0.005, help: 'How close a sprite pixel must be to a ramp colour to cycle; other pixels stay as drawn.', group: 'Source', when: { mode: [0] } }),
+        P('freezeFrame', 'Freeze at frame', 'frame', 0, { min: 0, max: 240, group: 'Source', when: { mode: [1] } }),
+        P('low', 'Dark end', 'num', 0, { min: 0, max: 1, step: 0.01, help: 'Brightness that maps to the first ramp colour.', group: 'Source', when: { mode: [1] } }),
+        P('high', 'Bright end', 'num', 1, { min: 0, max: 1, step: 0.01, help: 'Brightness that maps to the end of the ramp.', group: 'Source', when: { mode: [1] } }),
+        P('angle', 'Direction', 'num', 90, { min: -180, max: 180, step: 1, unit: '°', help: 'The way the colours flow; 90 = downwards.', group: 'Pattern', when: { mode: [2, 3] } }),
+        P('density', 'Repeats', 'num', 2, { min: 0.25, max: 24, step: 0.25, help: 'How many times the ramp repeats across the frame (or across dark to bright).', group: 'Pattern', when: { mode: [1, 2, 3, 4, 5] } }),
+        P('warp', 'Wave height', 'num', 0.15, { min: 0, max: 1, step: 0.01, unit: 'u', group: 'Pattern', when: { mode: [3] } }),
+        P('warpFreq', 'Waves across', 'num', 2, { min: 0, max: 12, step: 0.5, group: 'Pattern', when: { mode: [3] } }),
+        P('cx', 'Centre X', 'num', 0, { min: -1, max: 1, step: 0.01, unit: 'u', group: 'Pattern', when: { mode: [4] } }),
+        P('cy', 'Centre Y', 'num', 0, { min: -1, max: 1, step: 0.01, unit: 'u', group: 'Pattern', when: { mode: [4] } }),
+        P('count', 'Ramp colours', 'int', 6, { min: 2, max: 16, group: 'Cycle' }),
+        P('speed', 'Speed', 'num', 6, { min: -30, max: 30, step: 0.5, unit: 'steps/s', help: 'Colour steps per second; negative flows the other way. In a loop it snaps so the cycle closes exactly.', group: 'Cycle' }),
+        P('smooth', 'Smooth', 'num', 0, { min: 0, max: 1, step: 0.01, help: '0 = hard steps (pixel art), 1 = colours blend into each other (HD).', group: 'Cycle' }),
+        P('opacity', 'Opacity', 'num', 1, { min: 0, max: 1, step: 0.01, group: 'Cycle' }),
+      ].concat(Array.from({ length: 16 }, (_, k) => P('c' + k, 'Colour ' + (k + 1), 'color', 'ramp' + Math.min(k + 1, 6), { group: 'Ramp', ramp: true }))),
+      guide: `palette cycle layer (type "cycle"): colours flow through a ramp of palette slots, set in order as cycle.c0..c15 (first "count" used; add the slots to the palette first, e.g. "palette.lava1": "#3a0a00"). The ramp should run in the direction of flow. Modes: 0 sprite colours (pixels drawn in ramp colours cycle, others stay as drawn; "tolerance" sets the match), 1 layers below frozen at freezeFrame (their brightness from low to high picks the ramp position; the layers below are replaced, so shape them with any layers then cycle), 2 bands along "angle", 3 waves, 4 rings around cx,cy, 5 noise; "density" = ramp repeats. "speed" in steps per second (snaps to close loops), "smooth" 0 hard steps for pixel art, 1 blended for HD. Cheap at runtime: one still image plus the ramp.`,
+      glsl: `
+vec3 rampC(int k) { if (k <= 0) return u_c0; if (k == 1) return u_c1; if (k == 2) return u_c2; if (k == 3) return u_c3; if (k == 4) return u_c4; if (k == 5) return u_c5; if (k == 6) return u_c6; if (k == 7) return u_c7; if (k == 8) return u_c8; if (k == 9) return u_c9; if (k == 10) return u_c10; if (k == 11) return u_c11; if (k == 12) return u_c12; if (k == 13) return u_c13; if (k == 14) return u_c14; return u_c15; }
+vec3 rampAt(float pos, float N) {
+  float p = pos - N * floor(pos / N);
+  float f = floor(p + 0.001), t = max(p - f, 0.0);
+  int k = int(f); if (k >= int(N)) k = 0;
+  int k2 = k + 1; if (k2 >= int(N)) k2 = 0;
+  float b = u_smooth > 0.001 ? clamp((t - (1.0 - u_smooth)) / u_smooth, 0.0, 1.0) : 0.0;
+  return mix(rampC(k), rampC(k2), b);
+}
+float cycShift(float N) {
+  float dur = max(u_frames, 1.0) / u_fps;
+  float sp = u_loop > 0.5 ? floor(u_speed * dur / N + 0.5) * N / dur : u_speed;
+  return u_frame / u_fps * sp;
+}
+vec4 fx(vec2 uv) {
+  float N = clamp(floor(u_count + 0.5), 2.0, 16.0), sh = cycShift(N);
+  int m = int(u_mode + 0.5);
+  if (m == 0) {
+    vec4 c = src_source(${SAMPLE});
+    if (c.a <= 0.004) return vec4(0.0);
+    vec3 s = c.rgb / c.a;
+    int best = -1; float bd = 1e9;
+    for (int k = 0; k < 16; k++) { if (float(k) >= N) break; vec3 d = rampC(k) - s; float dd = dot(d, d); if (dd < bd) { bd = dd; best = k; } }
+    if (best < 0 || bd > u_tolerance * u_tolerance) return c * u_opacity;
+    return vec4(rampAt(float(best) - sh, N) * c.a, c.a) * u_opacity;
+  }
+  vec2 p = P(uv); float pos, a = 1.0;
+  if (m == 1) {
+    vec4 c = src_source(uv);
+    if (c.a <= 0.004) return vec4(0.0);
+    pos = clamp((lumi(c.rgb / c.a) - u_low) / max(0.001, u_high - u_low), 0.0, 0.9999) * N * u_density;
+    a = c.a;
+  } else if (m == 4) pos = length(p - vec2(u_cx, u_cy)) * 0.5 * u_density * N;
+  else if (m == 5) { float D = max(1.0, floor(u_density + 0.5)); pos = fbm(uv * D, PER(D), 4) * 2.0 * N; }
+  else {
+    float an = u_angle * PI / 180.0; vec2 d = vec2(cos(an), sin(an));
+    float along = dot(p, d);
+    if (m == 3) along += u_warp * sin(PI * dot(p, vec2(-d.y, d.x)) * u_warpFreq);
+    pos = (along * 0.5 + 0.5) * u_density * N;
+  }
+  return vec4(rampAt(pos - sh, N) * a, a) * u_opacity;
+}`,
+    },
     shader: {
       label: 'Custom shader', blend: 'normal', custom: true,
       cost: p => 4,

@@ -36,7 +36,12 @@ if (!fast) {
     layers: plain.map((t, i) => L(`${t}`, t, Object.assign(needsSprite(t) ? { source: i % 2 ? 'slime' : 'crate', scale: 0.35, offsetX: ((i % 4) - 1.5) * 0.45, offsetY: (Math.floor(i / 4) - 1) * 0.55 } : {}, t === 'water' || t === 'clouds' ? { opacity: 0.35 } : {}))).concat([L('ring', 'waveform', { mode: 5, wrap: 1, wrapRadius: 0.5, wrapWidth: 0.3, wrapSpin: 1, areaLeft: -0.8, areaSoft: 0.05 })]) };
   const B = { id: 'check-below', name: 'check below', seed: 3, canvas: { frames: 6, loop: true }, palette: pal,
     layers: [L('crate', 'sprite', { source: 'crate', scale: 0.5 }), ...Object.keys(GPU.TYPES).filter(t => GPU.TYPES[t].readsBelow).map(t => L(t, t, t === 'pathlight' ? { samples: 12, steps: 16 } : {}))] };
-  for (const [eff, engines] of [[A, 'godot,defold'], [B, 'godot']]) {
+  // palette cycling: a still frozen from the layers below (exported as one image) and a sprite drawn in ramp colours
+  const wf = ['#0e3a6e', '#19548f', '#2f7bbf', '#5aa6e0', '#a6dcf7', '#e9f9ff'];
+  const C = { id: 'check-cycle', name: 'check cycle', seed: 3, canvas: { frames: 6, fps: 12, loop: true }, palette: Object.assign({}, pal, Object.fromEntries(wf.map((c, i) => ['wf' + (i + 1), c]))),
+    layers: [L('shape', 'water', { scale: 3 }), L('frozen', 'cycle', { mode: 1, count: 6, speed: 6, smooth: 0.5 }),
+      L('falls', 'cycle', Object.assign({ mode: 0, source: 'waterfall', scale: 0.6, count: 6, speed: 6, tolerance: 0.04 }, Object.fromEntries(wf.map((c, i) => ['c' + i, 'wf' + (i + 1)]))))] };
+  for (const [eff, engines] of [[A, 'godot,defold'], [B, 'godot'], [C, 'godot,defold']]) {
     const dir = path.join(ROOT, 'build', 'check', eff.id); fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, 'effect.json'); fs.writeFileSync(file, JSON.stringify(eff));
     try {

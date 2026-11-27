@@ -1,0 +1,76 @@
+{
+  "id": "lava",
+  "name": "Lava (cycled from a frozen layer)",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 48,
+    "fps": 16,
+    "frames": 32,
+    "mode": "smooth",
+    "dither": true,
+    "alphaCut": 0.5,
+    "loop": true,
+    "tile": true
+  },
+  "palette": {
+    "lava1": "#2a0300",
+    "lava2": "#6b0d00",
+    "lava3": "#b82e00",
+    "lava4": "#f26b0f",
+    "lava5": "#ffc23d",
+    "deep": "#1a0400",
+    "shallow": "#5a1200",
+    "caustic": "#ffd27a",
+    "foam": "#ffe9b0",
+    "white": "#ffffff"
+  },
+  "layers": [
+    {
+      "id": "cells",
+      "type": "water",
+      "label": "Lava cells (shape only)",
+      "params": {
+        "scale": 3,
+        "flow": 1,
+        "waves": 0.6,
+        "caustics": 1.2,
+        "specular": 0,
+        "foam": 0,
+        "colorDeep": "deep",
+        "colorShallow": "shallow",
+        "colorLight": "caustic",
+        "colorFoam": "foam"
+      }
+    },
+    {
+      "id": "flow",
+      "type": "cycle",
+      "label": "Lava flow",
+      "params": {
+        "mode": 1,
+        "count": 8,
+        "speed": 4,
+        "smooth": 1,
+        "density": 1,
+        "c0": "lava1",
+        "c1": "lava2",
+        "c2": "lava3",
+        "c3": "lava4",
+        "c4": "lava5",
+        "c5": "lava4",
+        "c6": "lava3",
+        "c7": "lava2"
+      }
+    }
+  ],
+  "checks": [
+    {
+      "id": "loop",
+      "label": "Loops seamlessly",
+      "metric": "loopJump",
+      "op": "<=",
+      "value": 1.5
+    }
+  ]
+}

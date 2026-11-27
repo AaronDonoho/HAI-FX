@@ -284,7 +284,8 @@
   const DEFAULT_COLORS = { white: '#ffffff', hot: '#ffd35c', mid: '#e8431a', deep: '#0b3d5c', smoke: '#2e2a2c', ember: '#8e0900', arc: '#7fd4ff',
     trace: '#ffcf5c', traceGlow: '#ff8a2a', shallow: '#1f7fa3', caustic: '#9fe8ff', foam: '#e8fbff', cloud: '#f4f6fb', cloudShadow: '#8a95b3',
     metal: '#c49a5a', metalDark: '#4a3a26', metalLight: '#fff1c9', ink: '#1a1420', ambient: '#5a6a8a', rust: '#8a3b17', grime: '#2b2118',
-    moss: '#4f6b2a', sky: '#8090b0', torch: '#ffb35c', cool: '#7fb4ff', stone: '#3a3440' };
+    moss: '#4f6b2a', sky: '#8090b0', torch: '#ffb35c', cool: '#7fb4ff', stone: '#3a3440',
+    ramp1: '#0b2e59', ramp2: '#134b7a', ramp3: '#1f6fa0', ramp4: '#3a98c4', ramp5: '#7cc8e6', ramp6: '#d4f2ff' };
 
   // ------------------------------------------------------------- drawing
   function makeCtx(effect, frame) {
@@ -568,19 +569,46 @@
     const ctx = makeCtx(effect, frame);
     ctx.sources = opts.sources || null;
     const out = [], missing = [];
-    for (const layer of effect.layers) {
+    // a layer that freezes the layers below (palette cycle from a still) replaces them: they are only
+    // rendered once, at its freeze frame, into the still it cycles
+    const fz = effect.layers.reduce((j, l, i) => (l.enabled && TYPES[l.type] && TYPES[l.type].freezesBelow && Math.round(l.params.mode) === 1 ? i : j), -1);
+    for (let li = Math.max(0, fz); li < effect.layers.length; li++) {
+      const layer = effect.layers[li];
       if (!layer.enabled) continue;
       const T = TYPES[layer.type];
       if (!T || !RENDER[layer.type]) { missing.push(layer.type); continue; }
       const buf = new Float32Array(ctx.size * ctx.size * 4);
       if (T.readsBelow) ctx.below = flatten(ctx.size, out, null);
-      RENDER[layer.type](effect, layer, layer.params, ctx, buf);
+      let params = layer.params;
+      if (li === fz) {
+        const still = frozenBelow(effect, li, opts.sources);
+        ctx.sources = Object.assign({}, ctx.sources, { [still.sid]: still.img });
+        params = Object.assign({}, params, { source: still.sid });
+      }
+      RENDER[layer.type](effect, layer, params, ctx, buf);
       for (let i = 3; i < buf.length; i += 4) if (buf[i] > 1) buf[i] = 1;
       if (areaActive(layer.params)) applyArea(layer.params, ctx.size, buf, layer.blend === 'replace' ? (T.readsBelow ? ctx.below : flatten(ctx.size, out, null)) : null);
       out.push({ id: layer.id, blend: layer.blend, buf });
     }
     const layers = opts.only ? out.filter(L => opts.only.includes(L.id)) : out;
     return { size: ctx.size, layers, missing };
+  }
+
+  // The still a freezing layer cycles: the layers under it at its freeze frame (straight RGBA),
+  // cached by their content so editing them updates it.
+  const FROZEN = new Map();
+  const hashStr = str => { let h = 2166136261; for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 16777619); return (h >>> 0).toString(36); };
+  function frozenBelow(effect, li, sources) {
+    const layer = effect.layers[li], fr = Math.max(0, Math.min(effect.canvas.frames - 1, Math.round(layer.params.freezeFrame || 0)));
+    const sub = Object.assign({}, effect, { layers: effect.layers.slice(0, li), __norm: true });
+    const key = hashStr(JSON.stringify([fr, effect.canvas, effect.palette, effect.seed, sub.layers]));
+    let hit = FROZEN.get(key);
+    if (!hit) {
+      const r = renderFrame(sub, fr, { sources });
+      hit = { sid: '__frozen_' + layer.id + '_' + key, img: { data: r.data, w: r.size, h: r.size, pixel: effect.canvas.mode === 'pixel' } };
+      FROZEN.set(key, hit); if (FROZEN.size > 8) FROZEN.delete(FROZEN.keys().next().value);
+    }
+    return hit;
   }
 
   // Flatten layers in order. With bg ([r,g,b]) the result is opaque over that colour;
@@ -834,7 +862,12 @@
     for (const [id, P] of Object.entries(per)) summary.layers[id] = seriesSummary(P.energy, P.radius, P.coverage);
     // budgets: baked sheets in memory (uncompressed RGBA) and live-shader work per pixel
     summary.bakedKB = Math.round((passGroups(effect).length * F * size * size * 4) / 1024);
-    summary.shaderCost = effect.layers.reduce((s, l) => s + (l.enabled && TYPES[l.type] && TYPES[l.type].cost ? Math.round(TYPES[l.type].cost(l.params)) : 0), 0);
+    // runtime budget: layers frozen into a palette cycle's still cost one image, not shaders or frames
+    const fzI = effect.layers.reduce((j, l, i) => (l.enabled && TYPES[l.type] && TYPES[l.type].freezesBelow && Math.round(l.params.mode) === 1 ? i : j), -1);
+    const live = effect.layers.filter((l, i) => l.enabled && TYPES[l.type] && i >= Math.max(0, fzI));
+    summary.shaderCost = live.reduce((s, l) => s + (TYPES[l.type].cost ? Math.round(TYPES[l.type].cost(l.params)) : 0), 0);
+    const cpuRuns = live.reduce((n, l, i) => n + (TYPES[l.type].engine !== 'gpu' && (i === 0 || TYPES[live[i - 1].type].engine === 'gpu') ? 1 : 0), 0);
+    summary.liveKB = Math.round(((fzI >= 0 ? 1 : 0) * size * size * 4 + cpuRuns * F * size * size * 4) / 1024);
     const mad = (a, b) => { let s = 0; for (let i = 0; i < a.length; i += 4) s += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]); return s / (a.length * 0.75); };
     if (effect.canvas.loop && keep.length > 2) {
       // jump from the last frame back to the first, relative to a typical frame-to-frame step (1 = seamless)
@@ -996,7 +1029,8 @@
     const lines = [];
     for (const [name, T] of Object.entries(TYPES)) {
       if (only && !only.includes(name)) continue;
-      const ps = T.params.filter(p => !p.common).map(p => {
+      const ramp = T.params.filter(p => p.ramp);
+      const ps = T.params.filter(p => !p.common && !p.ramp).map(p => {
         if (p.type === 'color') return `${p.key}=@${p.def}`;
         if (p.type === 'ease') return `${p.key}=${p.def}~ease`;
         if (p.type === 'choice') return `${p.key}=${p.def}{${(p.options || []).map((o, i) => i + ':' + o).join('|')}}`;
@@ -1005,6 +1039,7 @@
         if (p.type === 'text') return `${p.key}=text`;
         return `${p.key}=${p.def}[${p.min}..${p.max}${p.unit ? ' ' + p.unit : ''}]`;
       });
+      if (ramp.length) ps.push(`${ramp[0].key}..${ramp[ramp.length - 1].key}=@${ramp[0].def}… (ramp colours in order)`);
       lines.push(`${name} (${T.engine === 'gpu' ? 'gpu' : 'cpu'}, ${T.blend}${T.readsBelow ? ', reads below' : ''}): ${ps.join(' ')}`);
     }
     if (Object.values(TYPES).some(T => T.params.some(p => p.key === 'wrap')) && !only) lines.push('gpu layers that do not read below also have wrap=0{0:Off|1:Around a circle} wrapRadius=0.55[0..1.5 u] wrapWidth=0.4[0.05..1.5 u] wrapTurn=0[-180..180 °] wrapSpin=0[-4..4 turns]: bends the layer around a ring (left-right runs clockwise from the top, top-bottom runs outside-in); e.g. a radial waveform, a ring of lightning, a vortex of clouds');
