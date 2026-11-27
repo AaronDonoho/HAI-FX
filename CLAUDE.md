@@ -17,8 +17,12 @@ specific: a layer, a parameter, a frame, a pixel, a version. No vague hints, no 
 4. When a version is approved: export, verify in both engines, commit.
 
 Quick changes don't need a round: the Studio's **Ask Claude** box calls Claude from the page
-(`sample` capability, on the artist's usage), gets three patches, and shows them in Compare. The
-ask and the pick are logged as a note with `kind: "ask"` (status addressed) so rounds see them.
+(`sample` capability, on the artist's usage), gets three options, and shows them in Compare. An
+option can patch params, add layers (any catalog type, at a position), remove or move layers, and
+say what it `cannot` do. When nothing fits, the artist hands it to a round in one tap ("Ask Claude to
+build it" prefills Send to Claude). The ask, the ops and the pick are logged as a note with
+`kind: "ask"` (status addressed) so rounds see them. If Ask keeps answering "cannot", that is a gap
+in the layer types or ops: fix the gap, not the wording.
 
 If this session is gone, start a new one on the **HAI-FX** cloud environment (its setup script
 installs Godot, Defold's bob.jar, Java 25 and the tool dependencies before Claude starts), read this
@@ -32,8 +36,9 @@ the engines). It catches regressions that single-effect checks miss.
 
 ## Where things live
 - **Studio** (the shared editor): https://claude.ai/artifact/WjGgnbNxE3E2dxoAgT7C7i
-  Source: `studio/index.html`. Published with files `fxcore.js`, `fxgpu.js` (from `core/`) and
-  `templates.json` (from `studio/`).
+  Source: `studio/index.html`. Published with files `fxcore.js`, `fxgpu.js`, `fxexport.js` (from
+  `core/`) and `templates.json` (from `studio/`). The artifact's security policy blocks `fetch()` of
+  `data:` URLs: decode images through `<img>` (sprites were invisible in the Studio until v8).
   Capabilities: `db`, `assets`, `downloads`, `comments` (Send to Claude), `sample` (Ask Claude).
   Open a given effect with `#<effect-id>`. Layout is built for the narrow side panel: the
   preview stays pinned while controls scroll.
@@ -57,7 +62,8 @@ the engines). It catches regressions that single-effect checks miss.
 - **Repo mirror**: `fx/<id>/effect.json` holds the latest approved version, committed with the
   version number in the message.
 - **Renderer**: `core/fxcore.js` (CPU layers: glow, ring, sparks/debris, smoke, fire) plus
-  `core/fxgpu.js` (GPU layers, WebGL2 GLSL: electric, waveform, water, clouds, gears, sprite
+  `core/fxgpu.js` (GPU layers, WebGL2 GLSL: electric, waveform [audio, sines, ECG, scope,
+  elastic/slinky pulse, plucked string], water, clouds, gears, bubbles [rising, wobbling, popping], sprite
   [tint/flash/dissolve], outline [silhouette or contrast edges], shade [lighting from a sprite],
   age [weathering], normals [normal map from a sprite], ripple and reflect [read everything below; blend `replace`], pathlight
   [path-traced light: 2D scene with soft shadows, emissive pixels and one bounce, or 2.5D relief

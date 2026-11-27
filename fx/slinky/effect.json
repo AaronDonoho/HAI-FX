@@ -1,0 +1,44 @@
+{
+  "id": "slinky",
+  "name": "Elastic wave (slinky)",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 48,
+    "fps": 30,
+    "frames": 40,
+    "mode": "smooth",
+    "dither": true,
+    "alphaCut": 0.5,
+    "loop": true,
+    "tile": false
+  },
+  "palette": {
+    "trace": "#ffcf5c",
+    "traceGlow": "#ff8a2a"
+  },
+  "layers": [
+    {
+      "id": "wave",
+      "type": "waveform",
+      "label": "Elastic wave",
+      "params": {
+        "mode": 5,
+        "amp": 0.5,
+        "speed": 1,
+        "trail": 4,
+        "grid": 0.2,
+        "thick": 0.014
+      }
+    }
+  ],
+  "checks": [
+    {
+      "id": "loop",
+      "label": "Loops seamlessly",
+      "metric": "loopJump",
+      "op": "<=",
+      "value": 1.5
+    }
+  ]
+}

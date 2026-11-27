@@ -1,0 +1,48 @@
+{
+  "id": "bubbles",
+  "name": "Bubbles in water",
+  "seed": 7,
+  "canvas": {
+    "size": 128,
+    "pixelSize": 48,
+    "fps": 30,
+    "frames": 32,
+    "mode": "smooth",
+    "dither": true,
+    "alphaCut": 0.5,
+    "loop": true,
+    "tile": true
+  },
+  "palette": {
+    "deep": "#0b3d5c",
+    "shallow": "#1f7fa3",
+    "caustic": "#9fe8ff",
+    "foam": "#e8fbff",
+    "white": "#ffffff"
+  },
+  "layers": [
+    {
+      "id": "water",
+      "type": "water",
+      "label": "Water",
+      "params": {
+        "flow": 1
+      }
+    },
+    {
+      "id": "bubbles",
+      "type": "bubbles",
+      "label": "Bubbles",
+      "params": {}
+    }
+  ],
+  "checks": [
+    {
+      "id": "loop",
+      "label": "Loops seamlessly",
+      "metric": "loopJump",
+      "op": "<=",
+      "value": 1.5
+    }
+  ]
+}

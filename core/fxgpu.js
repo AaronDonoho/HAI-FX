@@ -163,7 +163,9 @@ vec4 fx(vec2 uv) {
       label: 'Waveform', blend: 'add',
       cost: p => 8 * (1 + (p.trail || 0)) + ((p.mode || 0) == 2 ? 24 : 0),
       params: [
-        P('mode', 'Shape', 'choice', 0, { options: ['Harmonics', 'Heartbeat', 'Signal noise', 'Square', 'Sawtooth'], group: SH }),
+        P('mode', 'Shape', 'choice', 0, { options: ['Harmonics', 'Heartbeat', 'Signal noise', 'Square', 'Sawtooth', 'Elastic pulse (slinky)', 'Plucked string'], group: SH }),
+        P('damping', 'Damping', 'num', 3, { min: 0, max: 12, step: 0.1, help: 'Elastic and plucked shapes: how fast the motion dies away behind the pulse.', group: SH }),
+        P('stiffness', 'Stiffness', 'num', 6, { min: 0.5, max: 20, step: 0.1, help: 'Elastic shape: ripples per unit of line trailing the pulse.', group: SH }),
         P('amp', 'Amplitude', 'num', 0.35, { min: 0, max: 1, step: 0.01, unit: 'u', group: SH }), P('freq', 'Cycles across', 'num', 2, { min: 0.25, max: 12, step: 0.25, group: SH }),
         P('harmonics', 'Harmonics', 'int', 3, { min: 1, max: 6, group: SH }), P('y', 'Baseline', 'num', 0, { min: -1, max: 1, step: 0.01, unit: 'u', group: SH }),
         P('speed', 'Scroll', 'num', 1, { min: -6, max: 6, step: 0.25, help: 'Cycles per loop (whole numbers loop seamlessly) or per second.', group: MO }),
@@ -179,7 +181,16 @@ float wave(float x, float t) {
   else if (m == 1) { float q = fract(ph); y = exp(-pow((q - 0.5) * 30.0, 2.0)) - 0.35 * exp(-pow((q - 0.55) * 32.0, 2.0)) + 0.2 * exp(-pow((q - 0.75) * 10.0, 2.0)) - 0.08; }
   else if (m == 2) { y = (fbm(vec2(ph * 6.0, 3.3), vec2(u_freq * 6.0, 4096.0), 4) - 0.5) * 2.4; }
   else if (m == 3) { y = sin(2.0 * PI * ph) >= 0.0 ? 1.0 : -1.0; }
-  else { y = fract(ph) * 2.0 - 1.0; }
+  else if (m == 4) { y = fract(ph) * 2.0 - 1.0; }
+  else if (m == 5) {
+    // a pulse travelling along a springy line: the line ahead is tugged slightly, the line behind rings and settles
+    float s = fract(t * u_speed) * 1.6 - 0.3, d = s - x;
+    y = d > 0.0 ? exp(-u_damping * d) * sin(2.0 * PI * u_stiffness * d + 1.2) * smoothstep(0.0, 0.06, d) / 0.93 : -0.18 * exp(d * 22.0);
+  } else {
+    // plucked string: a standing wave re-plucked each cycle, decaying
+    float n = max(1.0, floor(u_freq + 0.5)), q = fract(t * u_speed);
+    y = sin(PI * x * n) * cos(2.0 * PI * q * n * 3.0) * exp(-u_damping * q);
+  }
   return u_y + y * u_amp;
 }
 float trace(vec2 p, float x, float t) {
@@ -520,6 +531,47 @@ vec4 fx(vec2 uv) {
   float hx = HT(st + vec2(o.x, 0.0), o) - HT(st - vec2(o.x, 0.0), o), hy = HT(st + vec2(0.0, o.y), o) - HT(st - vec2(0.0, o.y), o);
   vec3 n = normalize(vec3(-hx * u_depth * 4.0, (u_flipY > 0.5 ? -1.0 : 1.0) * hy * u_depth * 4.0, 1.0));
   return vec4((n * 0.5 + 0.5) * c.a, c.a);
+}`,
+    },
+
+    bubbles: {
+      label: 'Bubbles', blend: 'normal',
+      cost: p => (p.count || 24) * 3,
+      params: [
+        P('count', 'Bubbles', 'int', 24, { min: 1, max: 64, group: SH }),
+        P('sizeMin', 'Size min', 'num', 0.018, { min: 0.004, max: 0.2, step: 0.002, unit: 'u', group: SH }), P('sizeMax', 'Size max', 'num', 0.05, { min: 0.004, max: 0.3, step: 0.002, unit: 'u', group: SH }),
+        P('x', 'Centre X', 'num', 0, { min: -1, max: 1, step: 0.01, unit: 'u', group: SH }), P('width', 'Spread', 'num', 1.5, { min: 0, max: 2.4, step: 0.01, unit: 'u', group: SH }),
+        P('bottom', 'Start Y', 'num', 1.05, { min: -1.2, max: 1.2, step: 0.01, unit: 'u', group: SH }), P('surface', 'Pop Y', 'num', -0.75, { min: -1.2, max: 1.2, step: 0.01, unit: 'u', group: SH }),
+        P('speed', 'Rise', 'num', 1, { min: 0, max: 6, step: 0.25, help: 'Looping: trips per loop (whole numbers loop seamlessly). Otherwise trips per second.', group: MO }),
+        P('wobble', 'Wobble', 'num', 0.03, { min: 0, max: 0.2, step: 0.005, unit: 'u', group: MO }), P('wobbleFreq', 'Wobbles per trip', 'num', 3, { min: 0, max: 12, step: 0.5, group: MO }),
+        P('pop', 'Pop length', 'num', 0.1, { min: 0, max: 0.4, step: 0.01, help: 'Share of each trip spent bursting at the top.', group: MO }),
+        P('rim', 'Rim', 'num', 0.25, { min: 0.02, max: 0.8, step: 0.01, group: LK }), P('body', 'Body opacity', 'num', 0.15, { min: 0, max: 1, step: 0.01, group: LK }),
+        P('highlight', 'Highlight', 'num', 0.8, { min: 0, max: 2, step: 0.01, group: LK }), P('opacity', 'Opacity', 'num', 0.9, { min: 0, max: 1, step: 0.01, group: LK }),
+        P('colorRim', 'Rim', 'color', 'foam', { group: CO }), P('colorBody', 'Body', 'color', 'shallow', { group: CO }), P('colorHighlight', 'Highlight', 'color', 'white', { group: CO }),
+      ],
+      glsl: `
+vec4 fx(vec2 uv) {
+  vec2 p = P(uv); vec4 acc = vec4(0.0); float px = 2.0 / u_size;
+  for (int i = 0; i < 64; i++) {
+    if (float(i) >= u_count) break;
+    float fi = float(i), sz = h21(vec2(fi, 1.0));
+    float r = mix(u_sizeMin, u_sizeMax, sz);
+    float trips = u_loop > 0.5 ? max(1.0, floor(u_speed + 0.5)) * u_phase : u_time * u_speed * (0.75 + 0.5 * sz);
+    float life = fract(h21(vec2(fi, 2.0)) + trips);
+    vec2 c = vec2(u_x + (h21(vec2(fi, 3.0)) - 0.5) * u_width + sin(life * 2.0 * PI * u_wobbleFreq + fi * 1.7) * u_wobble, mix(u_bottom, u_surface, life));
+    float popT = u_pop > 0.0 ? clamp((life - (1.0 - u_pop)) / u_pop, 0.0, 1.0) : 0.0;
+    float rr = r * (1.0 + popT * 0.9), aa = px / rr;
+    vec2 q = (p - c) / rr; float d = length(q);
+    if (d > 1.0 + aa) continue;
+    float inside = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, d);
+    float rim = smoothstep(1.0 - u_rim - aa, 1.0 - u_rim * 0.3, d) * inside;
+    float hl = (1.0 - smoothstep(0.0, 0.32, length(q - vec2(-0.38, -0.38)))) * u_highlight * inside * (1.0 - popT);
+    float fade = (1.0 - popT) * smoothstep(0.0, 0.06, life);
+    float a = clamp(u_body * inside * (1.0 - popT) + rim + hl, 0.0, 1.0) * u_opacity * fade;
+    vec3 col = mix(u_colorBody, u_colorRim, clamp(rim * 1.5, 0.0, 1.0)) + u_colorHighlight * hl;
+    acc = vec4(min(col, vec3(1.0)) * a, a) + acc * (1.0 - a);
+  }
+  return acc;
 }`,
     },
 

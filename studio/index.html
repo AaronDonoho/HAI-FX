@@ -882,7 +882,7 @@ function openAsk(a) {
   const base = a.base ? FX.normalizeEffect(a.base) : S.cur;
   openCompare({
     title: 'Your ask: ' + String(a.text).slice(0, 80), question: a.reply ? String(a.reply).replace(/^Claude \(in page\): /, 'Claude understood: ') : '', picked: a.picked || undefined,
-    options: [{ key: 'A', label: 'Starting point', effect: base }].concat(a.options.map(o => ({ key: o.key, label: o.label, effect: FX.applyPatch(base, o.patch || {}) }))),
+    options: [{ key: 'A', label: 'Starting point', effect: base }].concat(a.options.map(o => ({ key: o.key, label: o.label, effect: o.ops ? (applyAskOption(base, o.ops) || { effect: base }).effect : FX.applyPatch(base, o.patch || {}) }))),
   });
 }
 
@@ -945,10 +945,11 @@ async function decodeSources(items, into) {
     const grid = cols > 1 || rows > 1 ? { cols, rows, frames: Math.max(1, +it.frames || cols * rows) } : null, key = it.data + JSON.stringify(grid);
     if (S.sources[sid] && S.sources[sid].key === key) { next[sid] = S.sources[sid]; continue; }
     try {
-      const bmp = await createImageBitmap(await (await fetch(it.data)).blob());
-      const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
+      // decode through an <img>: the artifact's security policy blocks fetch() of data: URLs
+      const bmp = new Image(); bmp.src = it.data; await bmp.decode();
+      const c = document.createElement('canvas'); c.width = bmp.naturalWidth; c.height = bmp.naturalHeight;
       const g = c.getContext('2d'); g.drawImage(bmp, 0, 0);
-      const d = g.getImageData(0, 0, bmp.width, bmp.height);
+      const d = g.getImageData(0, 0, c.width, c.height);
       next[sid] = { data: d.data, w: d.width, h: d.height, pixel: Math.max(d.width / cols, d.height / rows) <= 128, name: it.name || sid, url: it.data, grid, key };
     } catch (e) {}
   }
@@ -1051,7 +1052,8 @@ function openCompare(cfg) {
       h('button', { class: 'btn ghost', onclick: closeOverlay }, 'Close'),
       cfg.question ? h('p', { text: cfg.question }) : null),
     h('div', { class: 'obody gut' }, grid),
-    h('div', { class: 'ofoot gut' }, comment, useBtn, cfg.proposal ? h('button', { class: 'btn', onclick: () => finishCompare(ov, comment.value, true) }, 'None of these') : null));
+    h('div', { class: 'ofoot gut' }, comment, useBtn, cfg.proposal ? h('button', { class: 'btn', onclick: () => finishCompare(ov, comment.value, true) }, 'None of these') : null,
+      cfg.handoff ? h('button', { class: 'btn claude', onclick: () => { closeOverlay(); handoff(cfg.handoff + (comment.value ? '\n' + comment.value : '')); } }, 'None fit: ask Claude to build it') : null));
   document.body.append(node);
   ov.node = node; S.overlay = ov; renderChoiceBar();
   const pre = cells.find(c => c.key === cfg.picked);
@@ -1144,36 +1146,80 @@ function closeOverlay() { if (S.overlay) { S.overlay.node.remove(); S.overlay = 
 // --------------------------------------------------- Ask Claude (in-page)
 // Claude in the page sees only what we send: the effect, the parameter ranges, the measurements,
 // reference captions and the ask. It answers with three patches that we validate and clamp.
-function sanitizePatch(patch) {
-  const out = {}, newSlots = {};
+// Patches are checked against the effect they apply to (which may include layers the ask added).
+function sanitizePatch(patch, eff) {
+  const out = {};
+  const pal = Object.assign({}, eff.palette);
+  for (const [k, v] of Object.entries(patch || {})) if (k.startsWith('palette.') && typeof v === 'string' && /^#?[0-9a-f]{6}$/i.test(v) && /^[a-z0-9_]{1,20}$/i.test(k.slice(8))) { out[k] = '#' + v.replace('#', '').toLowerCase(); pal[k.slice(8)] = out[k]; }
   for (const [k, v] of Object.entries(patch || {})) {
     const [head, key] = String(k).split('.');
-    if (head === 'palette' && typeof v === 'string' && /^#?[0-9a-f]{6}$/i.test(v) && /^[a-z0-9_]{1,20}$/i.test(key)) { const hx = '#' + v.replace('#', '').toLowerCase(); out[k] = hx; newSlots[key] = hx; continue; }
-    const l = layerById(head); if (!l) continue;
+    if (head === 'palette') continue;
+    const l = eff.layers.find(x => x.id === head); if (!l) continue;
     if (key === 'enabled' && typeof v === 'boolean') { out[k] = v; continue; }
+    if (key === 'blend' && ['add', 'normal'].includes(v)) { out[k] = v; continue; }
+    if (key === 'label' && typeof v === 'string') { out[k] = v.slice(0, 40); continue; }
     const spec = FX.paramSpec(l.type, key); if (!spec) continue;
     if (spec.type === 'ease') { if (FX.EASE[v]) out[k] = v; }
-    else if (spec.type === 'color') { if (typeof v === 'string' && (S.cur.palette[v] || Object.keys(patch).includes('palette.' + v))) out[k] = v; }
+    else if (spec.type === 'color') { if (typeof v === 'string' && pal[v]) out[k] = v; }
     else if (spec.type === 'source') { if (typeof v === 'string' && S.sources[v]) out[k] = v; }
     else if (typeof v === 'number' && isFinite(v)) { let x = Math.min(spec.max, Math.max(spec.min, v)); if (spec.type !== 'num') x = Math.round(x); out[k] = x; }
   }
   return out;
 }
+// An option: {patch, add: [{type, id, label, params, position|below|above}], remove: [ids], move: [{id, position|below|above}]}.
+// Returns {effect, ops} with everything validated, or null when it changes nothing.
+function applyAskOption(base, o) {
+  let e = FX.normalizeEffect(base);
+  const where = (spec, list) => {
+    if (spec.position === 'bottom') return 0;
+    if (spec.below) { const i = list.findIndex(l => l.id === spec.below); if (i >= 0) return i; }
+    if (spec.above) { const i = list.findIndex(l => l.id === spec.above); if (i >= 0) return i + 1; }
+    return list.length;
+  };
+  const ops = { remove: [], move: [], add: [], patch: {} };
+  for (const id of Array.isArray(o.remove) ? o.remove : []) if (e.layers.some(l => l.id === id) && e.layers.length > 1) { e.layers = e.layers.filter(l => l.id !== id); ops.remove.push(id); }
+  for (const m of Array.isArray(o.move) ? o.move : []) {
+    const i = e.layers.findIndex(l => l.id === m.id); if (i < 0) continue;
+    const [l] = e.layers.splice(i, 1); e.layers.splice(where(m, e.layers), 0, l);
+    ops.move.push({ id: m.id, position: m.position, below: m.below, above: m.above });
+  }
+  const params = {};
+  for (const a of Array.isArray(o.add) ? o.add : []) {
+    if (!a || !FX.TYPES[a.type]) continue;
+    let id = /^[a-z][a-z0-9_-]{0,20}$/i.test(a.id || '') ? a.id : a.type + '1';
+    while (e.layers.some(l => l.id === id)) id = id.replace(/\d*$/, n => String((+n || 1) + 1));
+    const nl = FX.normalizeEffect({ palette: e.palette, layers: [{ id, type: a.type, label: String(a.label || FX.TYPES[a.type].label).slice(0, 40) }] }).layers[0];
+    e.layers.splice(where(a, e.layers), 0, nl);
+    ops.add.push({ type: a.type, id, label: nl.label, position: a.position, below: a.below, above: a.above });
+    for (const [k, v] of Object.entries(a.params || {})) params[id + '.' + k] = v;
+  }
+  ops.patch = sanitizePatch(Object.assign({}, params, o.patch || {}), e);
+  e = FX.applyPatch(e, ops.patch);
+  return FX.diff(base, e).length ? { effect: e, ops } : null;
+}
 function askPrompt(ask) {
   const e = clean(S.cur);
-
   const m = S.metrics ? S.metrics.summary : null;
+  const sprites = Object.entries(S.sources).map(([k, v]) => k + (v.grid ? ` (animated sheet, ${v.grid.frames} frames)` : '')).join(', ');
   return [
-    'You tune a 2D game visual effect (a sprite-sheet animation) for an artist. The effect is a stack of layers drawn bottom to top; each layer has typed parameters.',
-    'Units: time in frames at ' + e.canvas.fps + ' fps over ' + e.canvas.frames + ' frames; distance in "u" where 1u is half the frame width. Colour parameters name palette slots.',
-    'Layer types (type (engine, blend): param=default[min..max unit], @name = palette colour, ~ease, {choices}):\n' + FX.catalog([...new Set(e.layers.map(l => l.type))]),
-    'Current effect (JSON): ' + JSON.stringify({ palette: e.palette, layers: e.layers.map(l => ({ id: l.id, type: l.type, label: l.label, blend: l.blend, params: l.params })) }),
+    'You edit a 2D game visual effect (rendered to a sprite-sheet animation and live shaders) for an artist. The effect is a stack of layers drawn bottom to top; each layer has typed parameters.',
+    'Units: time in frames at ' + e.canvas.fps + ' fps over ' + e.canvas.frames + ' frames (loop: ' + !!e.canvas.loop + '); distance in "u" where 1u is half the frame width, x right, y down, 0,0 = centre. Colour parameters name palette slots.',
+    'Every layer type you can use (type (engine, blend[, reads below]): param=default[min..max unit], @name = palette colour, ~ease, {choices}):\n' + FX.catalog(),
+    'Current layers, bottom to top: ' + JSON.stringify(e.layers.map(l => ({ id: l.id, type: l.type, label: l.label, blend: l.blend, params: l.params }))),
+    'Palette: ' + JSON.stringify(e.palette) + (sprites ? '. Sprites available for "source" parameters: ' + sprites : '. No sprites are uploaded yet.'),
     m ? 'Measured now: brightness peaks at frame ' + m.peakFrame + ', visible until frame ' + m.fadeFrame + ', reaches ' + m.maxRadius + 'u, max coverage ' + Math.round(m.maxCoverage * 100) + '%.' : '',
     S.refs.length ? 'The artist\'s reference images are captioned: ' + S.refs.map(r => JSON.stringify(refName(r))).join('; ') : '',
     'The artist asks: ' + JSON.stringify(ask),
-    'Give three different interpretations of the ask, from conservative to bold. Each is a patch: an object mapping "<layerId>.<paramKey>" to a new value, or "palette.<slot>" to a "#rrggbb" colour (you may add a new slot and use it). Use only existing layer ids and parameter keys, stay inside each parameter\'s min/max, use ease names from the reference, and change only what the ask needs.',
-    'Reply with only JSON: {"understood": "one sentence restating the ask in concrete terms", "options": [{"label": "under 60 characters", "patch": {"layerId.param": value}}, ...three options]}',
+    'Give three different ways to do it, from conservative to bold. You may change parameters, add layers of any type above (e.g. sparks with negative gravity for rising particles), remove layers, and reorder them (e.g. move a layer to the bottom to make it a background). Prefer building the look from existing layer types over saying it cannot be done.',
+    'Only if no combination of these layer types can deliver what was asked, also fill "cannot" with one sentence naming the missing capability (a new layer type or behaviour) so a developer can build it; still give your best approximations as options.',
+    'Reply with only JSON: {"understood": "one sentence restating the ask in concrete terms", "cannot": "" , "options": [{"label": "under 60 characters", "patch": {"layerId.param": value, "palette.slot": "#rrggbb"}, "add": [{"type": "sparks", "id": "bubbles", "label": "Bubbles", "params": {"count": 30}, "position": "top" | "bottom", "below": "layerId", "above": "layerId"}], "remove": ["layerId"], "move": [{"id": "layerId", "position": "bottom"}]}, ...three options]}. Omit add/remove/move when unused.',
   ].filter(Boolean).join('\n\n');
+}
+// Hand a request the in-page Claude cannot do to the Claude session that builds new capabilities.
+async function handoff(text) {
+  $('sendDrawer').hidden = true;
+  await openSend();
+  const m = $('sendMsg'); if (m) { m.value = text; m.focus(); }
 }
 async function runAsk() {
   const ask = $('askText').value.trim();
@@ -1185,18 +1231,27 @@ async function runAsk() {
   const started = clean(S.cur);
   try {
     const res = await S.sample.json(askPrompt(ask), { signal: ctl.signal, modelTier: 'default', cache: false });
+    const cannot = res && typeof res.cannot === 'string' ? res.cannot.trim().slice(0, 400) : '';
     const opts = (res && Array.isArray(res.options) ? res.options : []).slice(0, 4)
-      .map((o, i) => ({ key: 'BCDE'[i], label: String(o.label || 'Option ' + (i + 1)).slice(0, 80), patch: sanitizePatch(o.patch) }))
-      .filter(o => Object.keys(o.patch).length);
-    if (!opts.length) { $('askStatus').textContent = 'Claude did not suggest a usable change. Try saying it differently.'; return; }
+      .map((o, i) => { const r = applyAskOption(started, o || {}); return r && { key: 'BCDE'[i], label: String(o.label || 'Option ' + (i + 1)).slice(0, 80), effect: r.effect, ops: r.ops }; })
+      .filter(Boolean);
+    const handoffText = `Build this for the "${S.cur.name || EID}" effect: ${ask}` + (cannot ? `\nThe in-page Claude says this needs: ${cannot}` : '');
+    if (!opts.length) {
+      $('askStatus').textContent = '';
+      $('askStatus').append(cannot ? `Needs something new: ${cannot} ` : 'No usable change came back. ', h('button', { class: 'btn small claude', onclick: () => handoff(handoffText) }, 'Ask Claude to build it'));
+      return;
+    }
     $('askStatus').textContent = String(res.understood || '').slice(0, 300);
     openCompare({
-      title: 'Your ask: ' + ask.slice(0, 80), question: res.understood ? 'Claude understood: ' + String(res.understood).slice(0, 300) : '',
-      options: [{ key: 'A', label: 'Current', effect: FX.normalizeEffect(started) }].concat(opts.map(o => ({ key: o.key, label: o.label, effect: FX.applyPatch(started, o.patch) }))),
+      title: 'Your ask: ' + ask.slice(0, 80),
+      question: (res.understood ? 'Claude understood: ' + String(res.understood).slice(0, 300) : '') + (cannot ? ` These are approximations; the full version needs: ${cannot}` : ''),
+      handoff: handoffText,
+      options: [{ key: 'A', label: 'Current', effect: FX.normalizeEffect(started) }].concat(opts.map(o => ({ key: o.key, label: o.label, effect: o.effect }))),
       onPick: (cell, comment) => {
         const chosen = cell && opts.find(o => o.key === cell.key);
-        addNote({ kind: 'ask', text: ask, reply: 'Claude (in page): ' + String(res.understood || ''), tags: ['asked claude'], picked: cell ? cell.key : null,
-          pickedLabel: chosen ? chosen.label : (cell ? 'Current' : 'none'), patch: chosen ? chosen.patch : null, comment: comment || '', options: opts, base: started,
+        addNote({ kind: 'ask', text: ask, reply: 'Claude (in page): ' + String(res.understood || ''), cannot, tags: ['asked claude'], picked: cell ? cell.key : null,
+          pickedLabel: chosen ? chosen.label : (cell ? 'Current' : 'none'), patch: chosen ? chosen.ops.patch : null, ops: chosen ? chosen.ops : null, comment: comment || '',
+          options: opts.map(o => ({ key: o.key, label: o.label, ops: o.ops })), base: started,
           baseVersion: S.baseVersion, status: 'addressed', author: 'you', createdAt: new Date().toISOString() }).catch(() => {});
       },
     });
