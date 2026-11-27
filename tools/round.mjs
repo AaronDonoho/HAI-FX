@@ -23,12 +23,13 @@
 //     {"key":"A","label":"Current"},
 //     {"key":"B","label":"…","patch":{"fire.heat":1.4,"palette.hot":"#ffd040"}},
 //     {"key":"C","label":"…","from":"B","addLayers":[{"id":"jets","type":"sparks","params":{}}],"removeLayers":["ring"]},
+//     {"key":"E","label":"…","from":"B","order":["sky","water","fire"]},   // layer ids bottom→top (unlisted stay on top)
 //     {"key":"D","label":"…","search":{"from":"B","vary":{"fire.heat":[1.1,1.6]},"samples":160}}
 //   ],
 //   "sweep": {"from":"B","vary":{…},"samples":200,"keep":3,"label":"Search"},   // adds `keep` diverse candidates
 //   "verify": "B",                                          // render in real Godot + Defold
 //   "write": {
-//     "version":  {"from":"B","message":"…"},               // new version (repo mirror updated too)
+//     "version":  {"from":"B","message":"…","mirror":false}, // new version; "mirror": true (approved) also writes fx/<id>/effect.json
 //     "proposal": {"title":"…","question":"…","options":["A","B","D"]},
 //     "reply":    {"message":"round summary","notes":{"<noteId>":"reply"},"resolve":["<noteId>"]}
 //   }
@@ -49,6 +50,7 @@ const require = createRequire(import.meta.url);
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const FX = require(path.join(ROOT, 'core/fxcore.js'));
+require(path.join(ROOT, 'core/fxgpu.js')).install(FX); // GPU layer types: params, defaults and blend modes for plans
 const OUT = path.join(ROOT, 'build', 'round');
 
 // Rendering, measuring and scoring run inside the browser engine (CPU + GPU layers, same code
@@ -246,6 +248,7 @@ function buildFrom(st, plan, built, spec) {
     const at = l.below ? e.layers.findIndex(x => x.id === l.below) : -1;
     if (at >= 0) e.layers.splice(at, 0, nl); else e.layers.push(nl);
   }
+  if (spec.order) { const rest = e.layers.filter(l => !spec.order.includes(l.id)); e.layers = spec.order.map(id => e.layers.find(l => l.id === id)).filter(Boolean).concat(rest); }
   if (spec.palette) Object.assign(e.palette, spec.palette);
   e = FX.applyPatch(e, spec.patch || {});
   delete e.__norm;
@@ -370,7 +373,8 @@ async function run(st, refs, plan) {
     const c = built[W.version.from]; if (!c) throw new Error('write.version.from unknown');
     const n = st.current.version + 1;
     put('v' + String(n).padStart(4, '0'), { kind: 'version', version: n, effect: clean(c.effect), savedBy: 'claude', author: 'claude', message: W.version.message || '', savedAt: now, t: now, changes: FX.diff(st.current.effect, c.effect).slice(0, 200) });
-    if (W.version.mirror !== false) fs.writeFileSync(path.join(ROOT, 'fx', st.eid, 'effect.json'), JSON.stringify(Object.assign({ name: c.effect.name || st.eid }, clean(c.effect)), null, 2) + '\n');
+    // fx/<id>/effect.json doubles as the template of that id: mirror only an approved version ("mirror": true)
+    if (W.version.mirror === true) fs.writeFileSync(path.join(ROOT, 'fx', st.eid, 'effect.json'), JSON.stringify(Object.assign({ name: c.effect.name || st.eid }, clean(c.effect)), null, 2) + '\n');
   }
   if (W.proposal) {
     const n = st.proposals.length + 1;

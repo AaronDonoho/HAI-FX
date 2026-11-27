@@ -97,6 +97,30 @@
   // type: frame | num | int | ease | color | angle
   const P = (key, label, type, def, extra) => Object.assign({ key, label, type, def }, extra || {});
   const TIMING = 'Timing', SHAPE = 'Shape', MOTION = 'Motion', LOOK = 'Look', COLOR = 'Color';
+  // Every layer can be confined to a rectangle (sky above a waterline, a bar, a window). Defaults = whole frame.
+  const AREA_PARAMS = [
+    P('areaTop', 'Top', 'num', -1, { min: -1, max: 1, step: 0.01, unit: 'u', group: 'Area', common: true }),
+    P('areaBottom', 'Bottom', 'num', 1, { min: -1, max: 1, step: 0.01, unit: 'u', group: 'Area', common: true }),
+    P('areaLeft', 'Left', 'num', -1, { min: -1, max: 1, step: 0.01, unit: 'u', group: 'Area', common: true }),
+    P('areaRight', 'Right', 'num', 1, { min: -1, max: 1, step: 0.01, unit: 'u', group: 'Area', common: true }),
+    P('areaSoft', 'Edge softness', 'num', 0, { min: 0, max: 0.5, step: 0.01, unit: 'u', group: 'Area', common: true }),
+  ];
+  const withArea = def => { if (!def.params.some(p => p.key === 'areaTop')) def.params = def.params.concat(AREA_PARAMS.map(p => Object.assign({}, p))); return def; };
+  const areaActive = p => p.areaTop > -1 || p.areaBottom < 1 || p.areaLeft > -1 || p.areaRight < 1;
+  const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  // Same formula as GPU.AREA (live shaders), so exports match the preview.
+  function applyArea(p, size, buf, below) {
+    const s = Math.max(p.areaSoft || 0, 1 / size);
+    for (let y = 0; y < size; y++) {
+      const py = ((y + 0.5) / size) * 2 - 1, my = sstep(p.areaTop - s, p.areaTop + s, py) * (1 - sstep(p.areaBottom - s, p.areaBottom + s, py));
+      for (let x = 0; x < size; x++) {
+        const px = ((x + 0.5) / size) * 2 - 1, m = my * sstep(p.areaLeft - s, p.areaLeft + s, px) * (1 - sstep(p.areaRight - s, p.areaRight + s, px));
+        if (m >= 1) continue;
+        const i = (y * size + x) * 4;
+        for (let k = 0; k < 4; k++) buf[i + k] = below ? below[i + k] + (buf[i + k] - below[i + k]) * m : buf[i + k] * m;
+      }
+    }
+  }
 
   const TYPES = {
     glow: {
@@ -246,9 +270,21 @@
       for (const p of T.params) params[p.key] = l.params && l.params[p.key] !== undefined ? l.params[p.key] : p.def;
       return { id: l.id, type: l.type, label: l.label || T.label, blend: l.blend || T.blend, enabled: l.enabled !== false, params };
     });
+    // A colour param naming a palette entry that doesn't exist gets one (editable in Colours), never magenta.
+    for (const l of e.layers) {
+      const T = TYPES[l.type]; if (!T) continue;
+      for (const p of T.params) {
+        const v = l.params[p.key];
+        if (p.type === 'color' && typeof v === 'string' && e.palette[v] === undefined && !/^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) e.palette[v] = DEFAULT_COLORS[v] || '#ffffff';
+      }
+    }
     e.checks = e.checks || [];
     return e;
   }
+  const DEFAULT_COLORS = { white: '#ffffff', hot: '#ffd35c', mid: '#e8431a', deep: '#0b3d5c', smoke: '#2e2a2c', ember: '#8e0900', arc: '#7fd4ff',
+    trace: '#ffcf5c', traceGlow: '#ff8a2a', shallow: '#1f7fa3', caustic: '#9fe8ff', foam: '#e8fbff', cloud: '#f4f6fb', cloudShadow: '#8a95b3',
+    metal: '#c49a5a', metalDark: '#4a3a26', metalLight: '#fff1c9', ink: '#1a1420', ambient: '#5a6a8a', rust: '#8a3b17', grime: '#2b2118',
+    moss: '#4f6b2a', sky: '#8090b0', torch: '#ffb35c', cool: '#7fb4ff', stone: '#3a3440' };
 
   // ------------------------------------------------------------- drawing
   function makeCtx(effect, frame) {
@@ -441,6 +477,7 @@
       }
     },
   };
+  for (const T of Object.values(TYPES)) withArea(T);
 
   // Temperature ramp: t = 1 core, .75 hot, .5 mid, .28 cool, 0 edge.
   function heatColor(stops, t) {
@@ -519,7 +556,7 @@
   };
 
   // Other layer families (e.g. fxgpu.js) register here: def = {label, blend, params, readsBelow?, engine?}.
-  function registerType(name, def, renderFn) { TYPES[name] = def; RENDER[name] = renderFn; }
+  function registerType(name, def, renderFn) { TYPES[name] = withArea(def); RENDER[name] = renderFn; }
 
   // Render every enabled layer of one frame into its own premultiplied buffer.
   // opts.sources: {id: {data, w, h}} sprite images; opts.only: layer ids to render.
@@ -539,6 +576,7 @@
       if (T.readsBelow) ctx.below = flatten(ctx.size, out, null);
       RENDER[layer.type](effect, layer, layer.params, ctx, buf);
       for (let i = 3; i < buf.length; i += 4) if (buf[i] > 1) buf[i] = 1;
+      if (areaActive(layer.params)) applyArea(layer.params, ctx.size, buf, layer.blend === 'replace' ? (T.readsBelow ? ctx.below : flatten(ctx.size, out, null)) : null);
       out.push({ id: layer.id, blend: layer.blend, buf });
     }
     const layers = opts.only ? out.filter(L => opts.only.includes(L.id)) : out;
@@ -958,7 +996,7 @@
     const lines = [];
     for (const [name, T] of Object.entries(TYPES)) {
       if (only && !only.includes(name)) continue;
-      const ps = T.params.map(p => {
+      const ps = T.params.filter(p => !p.common).map(p => {
         if (p.type === 'color') return `${p.key}=@${p.def}`;
         if (p.type === 'ease') return `${p.key}=${p.def}~ease`;
         if (p.type === 'choice') return `${p.key}=${p.def}{${(p.options || []).map((o, i) => i + ':' + o).join('|')}}`;
@@ -967,6 +1005,7 @@
       });
       lines.push(`${name} (${T.engine === 'gpu' ? 'gpu' : 'cpu'}, ${T.blend}${T.readsBelow ? ', reads below' : ''}): ${ps.join(' ')}`);
     }
+    lines.push('every layer also has areaTop=-1 areaBottom=1 areaLeft=-1 areaRight=1 [-1..1 u] areaSoft=0[0..0.5 u]: confines it to that rectangle (a replace layer shows what is below outside it)');
     return lines.join('\n');
   }
 

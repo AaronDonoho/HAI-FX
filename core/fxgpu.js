@@ -575,6 +575,31 @@ vec4 fx(vec2 uv) {
 }`,
     },
 
+    gradient: {
+      label: 'Gradient', blend: 'normal',
+      cost: p => 0,
+      params: [
+        P('mode', 'Shape', 'choice', 0, { options: ['Linear', 'Radial'], group: SH }),
+        P('angle', 'Direction', 'num', 90, { min: -180, max: 180, step: 1, unit: '°', help: 'Linear: from the start colour towards the end colour; 90 = top to bottom.', group: SH }),
+        P('cx', 'Centre X', 'num', 0, { min: -1, max: 1, step: 0.01, unit: 'u', group: SH }), P('cy', 'Centre Y', 'num', 0, { min: -1, max: 1, step: 0.01, unit: 'u', group: SH }),
+        P('radius', 'Radius', 'num', 1.2, { min: 0.05, max: 2, step: 0.01, unit: 'u', group: SH }),
+        P('from', 'Start at', 'num', 0, { min: 0, max: 1, step: 0.01, group: SH }), P('to', 'End at', 'num', 1, { min: 0, max: 1, step: 0.01, group: SH }),
+        P('mid', 'Middle at', 'num', 0.5, { min: 0.01, max: 0.99, step: 0.01, group: SH }), P('midAmount', 'Middle colour', 'num', 0, { min: 0, max: 1, step: 0.01, group: LK }),
+        P('alphaStart', 'Start opacity', 'num', 1, { min: 0, max: 1, step: 0.01, group: LK }), P('alphaEnd', 'End opacity', 'num', 1, { min: 0, max: 1, step: 0.01, group: LK }),
+        P('colorStart', 'Start', 'color', 'sky', { group: CO }), P('colorMid', 'Middle', 'color', 'white', { group: CO }), P('colorEnd', 'End', 'color', 'white', { group: CO }),
+      ],
+      glsl: `
+vec4 fx(vec2 uv) {
+  vec2 p = P(uv); float s;
+  if (u_mode < 0.5) { float a = u_angle * PI / 180.0; s = dot(p, vec2(cos(a), sin(a))) * 0.5 + 0.5; }
+  else s = length(p - vec2(u_cx, u_cy)) / max(0.05, u_radius);
+  s = clamp((s - u_from) / max(0.001, u_to - u_from), 0.0, 1.0);
+  vec3 c3 = s < u_mid ? mix(u_colorStart, u_colorMid, s / u_mid) : mix(u_colorMid, u_colorEnd, (s - u_mid) / (1.0 - u_mid));
+  vec3 c = mix(mix(u_colorStart, u_colorEnd, s), c3, u_midAmount);
+  float a = mix(u_alphaStart, u_alphaEnd, s);
+  return vec4(c * a, a);
+}`,
+    },
     ripple: {
       label: 'Ripple', blend: 'replace', readsBelow: true,
       cost: p => 2,
@@ -584,6 +609,7 @@ vec4 fx(vec2 uv) {
         P('reach', 'Reach', 'num', 1.2, { min: 0.1, max: 2, step: 0.01, unit: 'u', group: SH }), P('wavelength', 'Wavelength', 'num', 0.12, { min: 0.02, max: 0.5, step: 0.005, unit: 'u', group: SH }),
         P('rings', 'Ring width', 'num', 0.35, { min: 0.05, max: 1.5, step: 0.01, unit: 'u', group: SH }), P('strength', 'Distortion', 'num', 3, { min: 0, max: 16, step: 0.25, unit: 'px', group: LK }),
         P('highlight', 'Highlight', 'num', 0.25, { min: 0, max: 1, step: 0.01, group: LK }), P('sizeEase', 'Spread curve', 'ease', 'outQuad', { group: MO }),
+        P('tilt', 'Perspective', 'num', 1, { min: 0.1, max: 1, step: 0.01, help: '1 = seen from above; lower squashes the rings for a surface seen at an angle.', group: SH }),
         P('colorLight', 'Highlight', 'color', 'white', { group: CO }),
       ],
       glsl: `
@@ -592,7 +618,7 @@ vec4 fx(vec2 uv) {
   vec4 base = texture(b_below, uv);
   if (u_loop < 0.5 && (f < 0.0 || f >= u_duration)) return base;
   float t = u_loop > 0.5 ? u_phase : f / max(1.0, u_duration);
-  vec2 p = P(uv) - vec2(u_cx, u_cy); float r = length(p);
+  vec2 p = P(uv) - vec2(u_cx, u_cy); p.y /= max(0.1, u_tilt); float r = length(p);
   float front = ease(u_sizeEase, t) * u_reach;
   float env = exp(-pow((r - front) / max(0.01, u_rings * 0.5), 2.0)) * (1.0 - t);
   float w = sin(2.0 * PI * (r - front) / u_wavelength);
@@ -612,6 +638,7 @@ vec4 fx(vec2 uv) {
         P('opacity', 'Opacity', 'num', 0.55, { min: 0, max: 1, step: 0.01, group: LK }), P('wobble', 'Wobble', 'num', 2, { min: 0, max: 12, step: 0.25, unit: 'px', group: LK }),
         P('wobbleFreq', 'Wobble size', 'num', 18, { min: 2, max: 60, step: 0.5, group: LK }), P('speed', 'Wobble speed', 'num', 1, { min: -6, max: 6, step: 1, group: MO }),
         P('blur', 'Blur', 'num', 1, { min: 0, max: 6, step: 0.25, unit: 'px', group: LK }), P('tint', 'Tint', 'num', 0.35, { min: 0, max: 1, step: 0.01, group: LK }),
+        P('onto', 'Onto surfaces', 'num', 0, { min: 0, max: 1, step: 0.01, help: '0 = fills only empty space below the surface; 1 = also lies over opaque layers there (water).', group: LK }),
         P('colorTint', 'Tint colour', 'color', 'shallow', { group: CO }),
       ],
       glsl: `
@@ -628,7 +655,7 @@ vec4 fx(vec2 uv) {
   r /= wsum;
   r.rgb = mix(r.rgb, u_colorTint * r.a, u_tint);
   float fa = (1.0 - smoothstep(0.0, u_fade * 0.5, dy)) * u_opacity;
-  return base + r * fa * (1.0 - base.a);
+  return base * (1.0 - fa * u_onto * r.a) + r * fa * (u_onto + (1.0 - u_onto) * (1.0 - base.a));
 }`,
     },
     pathlight: {
@@ -933,11 +960,24 @@ void main() {
     }
   }
 
+  // Every layer can be confined to a rectangle; fxcore applies it for the preview and bakes, the
+  // exporters append AREA to live shaders (same formula as fxcore's applyArea).
+  const AREA_P = [['areaTop', 'Top', -1], ['areaBottom', 'Bottom', 1], ['areaLeft', 'Left', -1], ['areaRight', 'Right', 1]]
+    .map(([k, l, d]) => P(k, l, 'num', d, { min: -1, max: 1, step: 0.01, unit: 'u', group: 'Area', common: true }))
+    .concat([P('areaSoft', 'Edge softness', 'num', 0, { min: 0, max: 0.5, step: 0.01, unit: 'u', group: 'Area', common: true })]);
+  for (const d of Object.values(TYPES)) if (!d.params.some(p => p.key === 'areaTop')) d.params = d.params.concat(AREA_P);
+  const AREA = `
+float areaMask(vec2 uv) {
+  if (u_areaTop <= -1.0 && u_areaBottom >= 1.0 && u_areaLeft <= -1.0 && u_areaRight >= 1.0) return 1.0;
+  vec2 p = P(uv); float s = max(u_areaSoft, 1.0 / u_size);
+  return smoothstep(u_areaTop - s, u_areaTop + s, p.y) * (1.0 - smoothstep(u_areaBottom - s, u_areaBottom + s, p.y))
+    * smoothstep(u_areaLeft - s, u_areaLeft + s, p.x) * (1.0 - smoothstep(u_areaRight - s, u_areaRight + s, p.x));
+}`;
   function install(FX) {
     if (FX.__gpuInstalled) return;
     for (const [name, def] of Object.entries(TYPES)) FX.registerType(name, Object.assign({ engine: 'gpu' }, def), (effect, layer, p, ctx, buf) => render(effect, layer, p, ctx, buf));
     FX.__gpuInstalled = true;
   }
   function available() { try { ctx3(8); return true; } catch (e) { return false; } }
-  return { TYPES, LIB, SRC, EASES, install, available, fragmentSource, render };
+  return { TYPES, LIB, SRC, EASES, AREA, install, available, fragmentSource, render };
 });

@@ -60,7 +60,8 @@ the engines). It catches regressions that single-effect checks miss.
     Notes are answered and resolved through replies (creation only: no version pins needed).
   (Older per-type collections from the first studio versions are no longer read.)
 - **Repo mirror**: `fx/<id>/effect.json` holds the latest approved version, committed with the
-  version number in the message.
+  version number in the message. It is also the template of that id, so a round only writes it with
+  `"mirror": true` (approved), never for a work-in-progress version.
 - **Renderer**: `core/fxcore.js` (CPU layers: glow, ring, sparks/debris, smoke, fire) plus
   `core/fxgpu.js` (GPU layers, WebGL2 GLSL: electric, waveform [audio, sines, ECG, scope,
   elastic/slinky pulse, plucked string], water, clouds, gears, bubbles [rising, wobbling, popping], sprite
@@ -69,6 +70,9 @@ the engines). It catches regressions that single-effect checks miss.
   [path-traced light: 2D scene with soft shadows, emissive pixels and one bounce, or 2.5D relief
   with sun, sky occlusion and a point light]). The same files run
   in the Studio and, through `tools/engine.mjs` (headless Chromium), in every tool.
+  Every layer also has an **Area** (`areaTop/Bottom/Left/Right`, `areaSoft`, in u): sky above a
+  waterline, a bar, a window. `gradient` (linear/radial, three colours, opacity ramp) makes skies, depth
+  and vignettes. A colour param naming a missing palette entry gets a default entry (never magenta).
   Canvas flags `loop` and `tile` make GPU layers loop and tile exactly; `summary.loopJump` and
   `summary.tileSeam` measure it (≈1 is seamless). New layer types: add to `fxgpu.js` TYPES (params +
   `vec4 fx(vec2 uv)` returning premultiplied colour), then `node tools/templates.mjs`.

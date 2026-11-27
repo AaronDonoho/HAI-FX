@@ -758,7 +758,9 @@ function tabEdit(body) {
   const groups = {};
   for (const p of T.params) (groups[p.group] = groups[p.group] || []).push(p);
   for (const [g, specs] of Object.entries(groups)) {
-    const sec = h('div', { class: 'sec' }, h('h3', { text: g }));
+    // common settings (Area) stay folded until used
+    const folded = specs.every(p => p.common) && specs.every(p => l.params[p.key] === p.def);
+    const sec = folded ? h('details', { class: 'sec' }, h('summary', { text: g })) : h('div', { class: 'sec' }, h('h3', { text: g }));
     for (const spec of specs) sec.append(paramRow(spec, l.params[spec.key], baseL ? baseL.params[spec.key] : undefined,
       v => { l.params[spec.key] = v; edited(); }, v => { l.params[spec.key] = v; rerender(); }));
     body.append(sec);
