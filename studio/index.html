@@ -200,6 +200,7 @@ input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 3px
 .cell canvas, .cell img { width: 100%; aspect-ratio: 1; height: auto; image-rendering: pixelated; display: block; border-radius: 4px; object-fit: contain; background: #000; }
 .cell .k { font: 600 14px var(--f-mark); color: var(--accent); }
 .cell .cl { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.cell .cd { font: 11px/1.35 var(--f-mono); color: var(--muted); opacity: .8; text-align: left; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
 .ofoot .tin { flex: 1 1 220px; }
 .refview { display: flex; justify-content: center; }
 .refview canvas { max-width: 100%; height: auto; cursor: crosshair; }
@@ -1059,7 +1060,7 @@ function tabHistory(body) {
 function openCompare(cfg) {
   closeOverlay(); closeComposer(); setPlaying(true);
   S.lastCompare = cfg;
-  const cells = cfg.options.map(o => ({ key: o.key, label: o.label, effect: o.effect, cache: { gen: 0, size: 64, groups: [], frames: [], sources: o.srcMap }, canvas: h('canvas', { width: 1, height: 1 }) }));
+  const cells = cfg.options.map(o => ({ key: o.key, label: o.label, detail: o.detail, effect: o.effect, cache: { gen: 0, size: 64, groups: [], frames: [], sources: o.srcMap }, canvas: h('canvas', { width: 1, height: 1 }) }));
   const ov = { kind: 'compare', cfg, cells, selected: null };
   const comment = h('input', { class: 'tin', hidden: cfg.title === 'New effect', placeholder: cfg.proposal ? 'Why this one? What would you change? (optional)' : 'Optional note', 'aria-label': 'Comment' });
   const useBtn = h('button', { class: 'btn primary', disabled: true, onclick: () => finishCompare(ov, comment.value) }, 'Pick one above');
@@ -1067,7 +1068,8 @@ function openCompare(cfg) {
   const select = (key, el) => { ov.selected = key; grid.querySelectorAll('.cell:not(.refcell)').forEach(x => x.setAttribute('aria-pressed', String(x === el))); useBtn.disabled = false; useBtn.textContent = verb + key; };
   const grid = h('div', { class: 'grid' }, cells.map(c => {
     const el = h('button', { class: 'cell', 'aria-pressed': 'false', onclick: () => select(c.key, el) },
-      c.canvas, h('div', { class: 'row' }, h('span', { class: 'k', text: c.key }), h('span', { class: 'cl', text: c.label + (cfg.picked === c.key ? ' · your pick' : '') })));
+      c.canvas, h('div', { class: 'row' }, h('span', { class: 'k', text: c.key }), h('span', { class: 'cl', text: c.label + (cfg.picked === c.key ? ' · your pick' : '') })),
+      c.detail ? h('div', { class: 'cd', title: c.detail, text: c.detail }) : null);
     c.el = el;
     return el;
   }));
@@ -1174,20 +1176,22 @@ function closeOverlay() { if (S.overlay) { S.overlay.node.remove(); S.overlay = 
 // Claude in the page sees only what we send: the effect, the parameter ranges, the measurements,
 // reference captions and the ask. It answers with three patches that we validate and clamp.
 // Patches are checked against the effect they apply to (which may include layers the ask added).
-function sanitizePatch(patch, eff) {
+function sanitizePatch(patch, eff, why) {
+  why = why || [];
   const out = {};
   const pal = Object.assign({}, eff.palette);
   for (const [k, v] of Object.entries(patch || {})) if (k.startsWith('palette.') && typeof v === 'string' && /^#?[0-9a-f]{6}$/i.test(v) && /^[a-z0-9_]{1,20}$/i.test(k.slice(8))) { out[k] = '#' + v.replace('#', '').toLowerCase(); pal[k.slice(8)] = out[k]; }
   for (const [k, v] of Object.entries(patch || {})) {
     const [head, key] = String(k).split('.');
     if (head === 'palette') continue;
-    const l = eff.layers.find(x => x.id === head); if (!l) continue;
+    const l = eff.layers.find(x => x.id === head); if (!l) { why.push(`${k}: no layer "${head}"`); continue; }
     if (key === 'enabled' && typeof v === 'boolean') { out[k] = v; continue; }
     if (key === 'blend' && ['add', 'normal'].includes(v)) { out[k] = v; continue; }
     if (key === 'label' && typeof v === 'string') { out[k] = v.slice(0, 40); continue; }
-    const spec = FX.paramSpec(l.type, key); if (!spec) continue;
+    const spec = FX.paramSpec(l.type, key); if (!spec) { why.push(`${k}: ${l.type} has no setting "${key}"`); continue; }
+    const n0 = Object.keys(out).length;
     if (spec.type === 'ease') { if (FX.EASE[v]) out[k] = v; }
-    else if (spec.type === 'color') { if (typeof v === 'string' && pal[v]) out[k] = v; }
+    else if (spec.type === 'color') { if (typeof v === 'string' && pal[v]) out[k] = v; else { why.push(`${k}: "${v}" is not a palette slot (add "palette.${v}": "#rrggbb")`); continue; } }
     else if (spec.type === 'source') { if (typeof v === 'string' && S.sources[v]) out[k] = v; }
     else if (spec.type === 'code') { if (typeof v === 'string' && v.length < 12000) out[k] = v; }
     else if (spec.type === 'text') { if (typeof v === 'string') out[k] = v.slice(0, 120); }
@@ -1195,13 +1199,16 @@ function sanitizePatch(patch, eff) {
       // choice params (Wrap, Mode, Shape…) have no min/max: their range is the option list
       const lo = spec.type === 'choice' ? 0 : spec.min, hi = spec.type === 'choice' ? (spec.options || []).length - 1 : spec.max;
       let x = Math.min(hi, Math.max(lo, v)); if (spec.type !== 'num') x = Math.round(x); if (isFinite(x)) out[k] = x;
+      if (isFinite(x) && x !== v) why.push(`${k}: ${v} is outside ${lo}..${hi}, used ${x}`);
     }
+    if (Object.keys(out).length === n0) why.push(`${k}: ${JSON.stringify(v).slice(0, 40)} is not a valid ${spec.type}`);
   }
   return out;
 }
 // An option: {patch, add: [{type, id, label, params, position|below|above}], remove: [ids], move: [{id, position|below|above}]}.
 // Returns {effect, ops} with everything validated, or null when it changes nothing.
-function applyAskOption(base, o) {
+function applyAskOption(base, o, why) {
+  why = why || [];
   let e = FX.normalizeEffect(base);
   const where = (spec, list) => {
     if (spec.position === 'bottom') return 0;
@@ -1210,15 +1217,15 @@ function applyAskOption(base, o) {
     return list.length;
   };
   const ops = { remove: [], move: [], add: [], patch: {} };
-  for (const id of Array.isArray(o.remove) ? o.remove : []) if (e.layers.some(l => l.id === id) && e.layers.length > 1) { e.layers = e.layers.filter(l => l.id !== id); ops.remove.push(id); }
+  for (const id of Array.isArray(o.remove) ? o.remove : []) if (e.layers.some(l => l.id === id)) { e.layers = e.layers.filter(l => l.id !== id); ops.remove.push(id); } else why.push(`remove ${id}: no such layer`);
   for (const m of Array.isArray(o.move) ? o.move : []) {
-    const i = e.layers.findIndex(l => l.id === m.id); if (i < 0) continue;
+    const i = e.layers.findIndex(l => l.id === m.id); if (i < 0) { why.push(`move ${m.id}: no such layer`); continue; }
     const [l] = e.layers.splice(i, 1); e.layers.splice(where(m, e.layers), 0, l);
     ops.move.push({ id: m.id, position: m.position, below: m.below, above: m.above });
   }
   const params = {};
   for (const a of Array.isArray(o.add) ? o.add : []) {
-    if (!a || !FX.TYPES[a.type]) continue;
+    if (!a || !FX.TYPES[a.type]) { why.push(`add: unknown layer type "${a && a.type}"`); continue; }
     let id = /^[a-z][a-z0-9_-]{0,20}$/i.test(a.id || '') ? a.id : a.type + '1';
     while (e.layers.some(l => l.id === id)) id = id.replace(/\d*$/, n => String((+n || 1) + 1));
     const nl = FX.normalizeEffect({ palette: e.palette, layers: [{ id, type: a.type, label: String(a.label || FX.TYPES[a.type].label).slice(0, 40) }] }).layers[0];
@@ -1226,10 +1233,58 @@ function applyAskOption(base, o) {
     ops.add.push({ type: a.type, id, label: nl.label, position: a.position, below: a.below, above: a.above });
     for (const [k, v] of Object.entries(a.params || {})) params[id + '.' + k] = v;
   }
-  ops.patch = sanitizePatch(Object.assign({}, params, o.patch || {}), e);
+  ops.patch = sanitizePatch(Object.assign({}, params, o.patch || {}), e, why);
   e = FX.applyPatch(e, ops.patch);
   return FX.diff(base, e).length ? { effect: e, ops } : null;
 }
+// ---- what in-page Claude can see: compact brightness maps, stats, and a contact sheet image
+const RAMP = ' .:-=+*#%@';
+function frameLook(effect, f) {
+  const r = FX.renderFrame(effect, f, { sources: S.sources }), N = r.size, d = r.data, cols = 32, rows = 16;
+  let cov = 0, wr = 0, wg = 0, wb = 0, wa = 0;
+  for (let i = 0; i < d.length; i += 4) { const a = d[i + 3] / 255; if (a > 0.1) cov++; wr += d[i] * a; wg += d[i + 1] * a; wb += d[i + 2] * a; wa += a; }
+  const lines = [];
+  for (let y = 0; y < rows; y++) {
+    let line = '';
+    for (let x = 0; x < cols; x++) {
+      const x0 = Math.floor(x * N / cols), x1 = Math.max(x0 + 1, Math.floor((x + 1) * N / cols)), y0 = Math.floor(y * N / rows), y1 = Math.max(y0 + 1, Math.floor((y + 1) * N / rows));
+      let s = 0, n = 0;
+      for (let yy = y0; yy < y1; yy++) for (let xx = x0; xx < x1; xx++) { const i = (yy * N + xx) * 4; s += (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) * d[i + 3] / 65025; n++; }
+      line += RAMP[Math.min(9, Math.floor(Math.sqrt(s / n) * 10))];
+    }
+    lines.push('|' + line + '|');
+  }
+  const hex = wa > 0 ? FX.rgbToHex([wr / wa / 255, wg / wa / 255, wb / wa / 255]) : null;
+  return { frame: f, coverage: +(cov / (N * N)).toFixed(3), meanColour: hex, map: lines.join('\n') };
+}
+function lookFrames(effect) { const F = effect.canvas.frames; return [0, Math.round(F / 4), Math.round(F / 2), Math.round(F * 3 / 4)]; }
+function previewReport(base, option) {
+  const why = [], x = applyAskOption(base, option || {}, why);
+  if (!x) return { changes: [], ignored: why, note: 'This option changes nothing that the page accepts.' };
+  const shaderErrors = x.effect.layers.filter(l => l.type === 'shader').map(l => [l.id, FXGPU.check(l.params.code)]).filter(e => e[1]).map(([id, m]) => `${id}: ${m}`);
+  const e = FX.normalizeEffect(x.effect);
+  return {
+    changes: changeLines(base, x.effect), ignored: why, shaderErrors,
+    layers: e.layers.map(l => `${l.id} (${l.type}${l.blend !== FX.TYPES[l.type].blend ? ', ' + l.blend : ''})`).join(' < '),
+    frames: lookFrames(e).map(f => frameLook(e, f)),
+  };
+}
+const fmtV = v => (v === undefined || v === null ? '-' : typeof v === 'number' ? String(+v.toFixed(3)) : String(v).length > 28 ? '(code)' : String(v));
+function changeLines(a, b) {
+  return FX.diff(a, b).map(d => typeof d.to === 'string' && /^added/.test(d.to) ? `+ ${d.path} ${d.to.slice(5)}` : d.to === 'removed' ? `- ${d.path}` : `${d.path}: ${fmtV(d.from)} → ${fmtV(d.to)}`);
+}
+async function contactSheet(effect) {
+  const e = FX.normalizeEffect(effect), fr = lookFrames(e), N = 160, c = document.createElement('canvas');
+  c.width = N * fr.length; c.height = N;
+  const g = c.getContext('2d'); g.fillStyle = '#000'; g.fillRect(0, 0, c.width, c.height);
+  fr.forEach((f, i) => {
+    const r = FX.renderFrame(e, f, { bg: [0, 0, 0], sources: S.sources }), t = document.createElement('canvas'); t.width = t.height = r.size;
+    t.getContext('2d').putImageData(new ImageData(r.data, r.size, r.size), 0, 0);
+    g.imageSmoothingEnabled = e.canvas.mode !== 'pixel'; g.drawImage(t, i * N, 0, N, N);
+  });
+  return new Promise(res => c.toBlob(b => res(b), 'image/png'));
+}
+function dataUrlBlob(u) { const [h0, b64] = String(u).split(','); const bin = atob(b64), a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return new Blob([a], { type: (/data:([^;]+)/.exec(h0) || [])[1] || 'image/jpeg' }); }
 function askPrompt(ask) {
   const e = clean(S.cur);
   const m = S.metrics ? S.metrics.summary : null;
@@ -1243,9 +1298,11 @@ function askPrompt(ask) {
     m ? 'Measured now: brightness peaks at frame ' + m.peakFrame + ', visible until frame ' + m.fadeFrame + ', reaches ' + m.maxRadius + 'u, max coverage ' + Math.round(m.maxCoverage * 100) + '%.' : '',
     S.refs.length ? 'The artist\'s reference images are captioned: ' + S.refs.map(r => JSON.stringify(refName(r))).join('; ') : '',
     'The artist asks: ' + JSON.stringify(ask),
+    S.askSees ? S.askSees : '',
     e.layers.length ? '' : 'The effect is empty: build it from scratch with added layers.',
     'Give three different ways to do it, from conservative to bold. You may change parameters, add layers of any type above (e.g. sparks with negative gravity for rising particles), remove layers, and reorder them (e.g. move a layer to the bottom to make it a background). Layers can be confined to an area and gpu layers wrapped around a circle. When no layer type draws the shape or motion asked for, write a custom shader layer (type "shader", rules above): that is how new looks get made here, so do it rather than settle for a weak approximation; name its sliders in params.names.',
     'Only if even a custom shader cannot deliver it (it would need to distort the layers below it, a 3D model, or sound), also fill "cannot" with one sentence naming the missing capability so a developer can build it; still give your best approximations as options.',
+    S.askTools ? 'You have a tool, preview_option: it applies an option exactly as the page will, renders it, and tells you what changed, what was ignored and why, shader compile errors, and brightness maps of four frames. Call it for each of your options (in one round), check the maps actually show what the artist asked for, fix what is wrong (preview again if needed), then answer. Never answer with an option you have not previewed.' : '',
     'Reply with only JSON: {"understood": "one sentence restating the ask in concrete terms", "cannot": "" , "options": [{"label": "under 60 characters", "patch": {"layerId.param": value, "palette.slot": "#rrggbb"}, "add": [{"type": "sparks", "id": "bubbles", "label": "Bubbles", "params": {"count": 30}, "position": "top" | "bottom", "below": "layerId", "above": "layerId"}, {"type": "shader", "id": "ring", "params": {"code": "vec4 fx(vec2 uv) { ... }", "names": "Radius,Width", "a": 0.4}}], "remove": ["layerId"], "move": [{"id": "layerId", "position": "bottom"}]}, ...three options]}. Omit add/remove/move when unused.',
   ].filter(Boolean).join('\n\n');
 }
@@ -1261,11 +1318,32 @@ async function runAsk() {
   if (!S.sample) { toast('Asking needs the Claude app. You can also tell Claude in chat.'); return; }
   if (S.asking) { S.asking.abort(); return; }
   const ctl = new AbortController(); S.asking = ctl;
-  $('askBtn').textContent = 'Stop'; $('askStatus').textContent = 'Claude is thinking… (usually 20–60 s)';
+  $('askBtn').textContent = 'Stop'; $('askStatus').textContent = 'Claude is thinking… (it tries its ideas before answering: often 1–3 minutes)';
   const started = clean(S.cur);
   try {
+    const lim = await S.sample.limits().catch(() => ({}));
+    const tier = !lim.modelTiers || lim.modelTiers.includes('complex') ? 'complex' : 'default';
+    const opt = { signal: ctl.signal, modelTier: tier, cache: false };
+    S.askTools = !!lim.tools; S.askSees = '';
+    if (lim.tools) {
+      let n = 0;
+      opt.tools = [{ name: 'preview_option',
+        description: 'Applies one option (the same JSON shape as an option in your answer) to the current effect and renders it. Returns: changes applied, suggestions ignored and why, custom-shader compile errors, the layer order, and for frames 0, 1/4, 1/2, 3/4: coverage, mean colour, and a 32x16 brightness map (" .:-=+*#%@" dark to bright; the frame is square, each character twice as tall as wide).',
+        inputSchema: { type: 'object', properties: { option: { type: 'object', description: 'One option: {label, patch, add, remove, move}' } }, required: ['option'] },
+        execute: async input => { n++; $('askStatus').textContent = `Claude is trying its ideas in the page… (${n} preview${n > 1 ? 's' : ''})`; await new Promise(r => setTimeout(r, 0)); return previewReport(started, input && input.option); } }];
+      delete opt.cache;
+    }
+    if (lim.images) {
+      try {
+        const imgs = [await contactSheet(started)];
+        const ref = S.sideRef || S.refs[0];
+        if (ref && ref.thumb && lim.images.maxCount > 1) imgs.push(dataUrlBlob(ref.thumb));
+        opt.images = imgs.filter(Boolean);
+        S.askSees = 'Image 1 shows the effect as it is now: frames 0, 1/4, 1/2 and 3/4 of the way through, left to right, over black.' + (opt.images.length > 1 ? ' Image 2 is the artist\'s reference: ' + JSON.stringify(refName(ref)) + '.' : '');
+      } catch (e) { delete opt.images; }
+    }
     const prompt = askPrompt(ask);
-    let res = await S.sample.json(prompt, { signal: ctl.signal, modelTier: 'default', cache: false });
+    let res = await S.sample.json(prompt, opt);
     const build = r => (r && Array.isArray(r.options) ? r.options : []).slice(0, 4)
       .map((o, i) => { const x = applyAskOption(started, o || {}); return x && { key: 'BCDE'[i], label: String(o.label || 'Option ' + (i + 1)).slice(0, 80), effect: x.effect, ops: x.ops }; })
       .filter(Boolean);
@@ -1277,7 +1355,7 @@ async function runAsk() {
       $('askStatus').textContent = 'Fixing a shader that did not compile…';
       const fix = prompt + '\n\nYour previous answer: ' + JSON.stringify(res) + '\n\nThese custom shaders failed to compile (line numbers count from the first line of that layer\'s code):\n' +
         bad.map(b => `option "${b.o.label}": ` + b.errs.map(([id, m]) => `${id}: ${m}`).join('; ')).join('\n') + '\n\nReply with the whole JSON again, fixed.';
-      try { const res2 = await S.sample.json(fix, { signal: ctl.signal, modelTier: 'default', cache: false }); const opts2 = build(res2); if (opts2.length) { res = res2; opts = opts2; } } catch (e) { if (e.code === 'cancelled') throw e; }
+      try { const res2 = await S.sample.json(fix, { signal: ctl.signal, modelTier: tier, cache: false }); const opts2 = build(res2); if (opts2.length) { res = res2; opts = opts2; } } catch (e) { if (e.code === 'cancelled') throw e; }
       const still = new Set(broken(opts).map(b => b.o));
       opts = opts.filter(o => !still.has(o));
     }
@@ -1301,7 +1379,7 @@ async function runAsk() {
       title: 'Your ask: ' + ask.slice(0, 80),
       question: (res.understood ? 'Claude understood: ' + String(res.understood).slice(0, 300) : '') + (cannot ? ` These are approximations; the full version needs: ${cannot}` : ''),
       handoff: handoffText,
-      options: [{ key: 'A', label: 'Current', effect: FX.normalizeEffect(started) }].concat(opts.map(o => ({ key: o.key, label: o.label, effect: o.effect }))),
+      options: [{ key: 'A', label: 'Current', effect: FX.normalizeEffect(started) }].concat(opts.map(o => ({ key: o.key, label: o.label, effect: o.effect, detail: changeLines(started, o.effect).join(' · ') }))),
       onPick: (cell, comment) => logAsk(cell, comment, 'addressed'),
       onHandoff: comment => logAsk(null, comment, 'open'), // handed to a round: stays open until Claude replies
     });

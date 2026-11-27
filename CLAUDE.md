@@ -17,7 +17,11 @@ specific: a layer, a parameter, a frame, a pixel, a version. No vague hints, no 
 4. When a version is approved: export, verify in both engines, commit.
 
 Quick changes don't need a round: the Studio's **Ask Claude** box calls Claude from the page
-(`sample` capability, on the artist's usage), gets three options, and shows them in Compare. An
+(`sample` capability, on the artist's usage, most capable tier), gets three options, and shows them
+in Compare with what each changed. It works like a small round: it sees a contact sheet of the
+effect (and the side reference), and its `preview_option` tool applies an option exactly as the page
+will, renders it, and returns what changed, what was ignored and why, shader compile errors and
+32x16 brightness maps of four frames, so it checks and fixes options before answering. An
 option can patch params, add layers (any catalog type, at a position), remove or move layers, and
 say what it `cannot` do. When nothing fits, the artist hands it to a round in one tap ("Ask Claude to
 build it" prefills Send to Claude). The ask, the ops and the pick are logged as a note with
