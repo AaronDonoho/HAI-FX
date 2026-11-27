@@ -1080,7 +1080,7 @@ function openCompare(cfg) {
       cfg.question ? h('p', { text: cfg.question }) : null, cfg.extra || null),
     h('div', { class: 'obody gut' }, grid),
     h('div', { class: 'ofoot gut' }, comment, useBtn, cfg.proposal ? h('button', { class: 'btn', onclick: () => finishCompare(ov, comment.value, true) }, 'None of these') : null,
-      cfg.handoff ? h('button', { class: 'btn claude', onclick: () => { closeOverlay(); handoff(cfg.handoff + (comment.value ? '\n' + comment.value : '')); } }, 'None fit: ask Claude to build it') : null));
+      cfg.handoff ? h('button', { class: 'btn claude', onclick: () => { if (cfg.onHandoff) cfg.onHandoff(comment.value); closeOverlay(); handoff(cfg.handoff + (comment.value ? '\n' + comment.value : '')); } }, 'None fit: ask Claude to build it') : null));
   document.body.append(node);
   ov.node = node; S.overlay = ov; renderChoiceBar();
   const pre = cells.find(c => c.key === cfg.picked);
@@ -1191,7 +1191,11 @@ function sanitizePatch(patch, eff) {
     else if (spec.type === 'source') { if (typeof v === 'string' && S.sources[v]) out[k] = v; }
     else if (spec.type === 'code') { if (typeof v === 'string' && v.length < 12000) out[k] = v; }
     else if (spec.type === 'text') { if (typeof v === 'string') out[k] = v.slice(0, 120); }
-    else if (typeof v === 'number' && isFinite(v)) { let x = Math.min(spec.max, Math.max(spec.min, v)); if (spec.type !== 'num') x = Math.round(x); out[k] = x; }
+    else if (typeof v === 'number' && isFinite(v)) {
+      // choice params (Wrap, Mode, Shape…) have no min/max: their range is the option list
+      const lo = spec.type === 'choice' ? 0 : spec.min, hi = spec.type === 'choice' ? (spec.options || []).length - 1 : spec.max;
+      let x = Math.min(hi, Math.max(lo, v)); if (spec.type !== 'num') x = Math.round(x); if (isFinite(x)) out[k] = x;
+    }
   }
   return out;
 }
@@ -1278,10 +1282,18 @@ async function runAsk() {
       opts = opts.filter(o => !still.has(o));
     }
     const cannot = res && typeof res.cannot === 'string' ? res.cannot.trim().slice(0, 400) : '';
+    // every ask is recorded, including ones that came back empty or were handed to a round
+    const logAsk = (cell, comment, status) => {
+      const chosen = cell && opts.find(o => o.key === cell.key);
+      addNote({ kind: 'ask', text: ask, reply: 'Claude (in page): ' + String((res && res.understood) || ''), cannot, tags: ['asked claude'], picked: cell ? cell.key : null,
+        pickedLabel: chosen ? chosen.label : (cell ? 'Current' : 'none fit'), patch: chosen ? chosen.ops.patch : null, ops: chosen ? chosen.ops : null, comment: comment || '',
+        options: opts.map(o => ({ key: o.key, label: o.label, ops: o.ops })), base: started,
+        baseVersion: S.baseVersion, status, author: 'you', createdAt: new Date().toISOString() }).catch(() => {});
+    };
     const handoffText = `Build this for the "${S.cur.name || EID}" effect: ${ask}` + (cannot ? `\nThe in-page Claude says this needs: ${cannot}` : '');
     if (!opts.length) {
       $('askStatus').textContent = '';
-      $('askStatus').append(cannot ? `Needs something new: ${cannot} ` : 'No usable change came back. ', h('button', { class: 'btn small claude', onclick: () => handoff(handoffText) }, 'Ask Claude to build it'));
+      $('askStatus').append(cannot ? `Needs something new: ${cannot} ` : 'No usable change came back. ', h('button', { class: 'btn small claude', onclick: () => { logAsk(null, '', 'open'); handoff(handoffText); } }, 'Ask Claude to build it'));
       return;
     }
     $('askStatus').textContent = String(res.understood || '').slice(0, 300);
@@ -1290,13 +1302,8 @@ async function runAsk() {
       question: (res.understood ? 'Claude understood: ' + String(res.understood).slice(0, 300) : '') + (cannot ? ` These are approximations; the full version needs: ${cannot}` : ''),
       handoff: handoffText,
       options: [{ key: 'A', label: 'Current', effect: FX.normalizeEffect(started) }].concat(opts.map(o => ({ key: o.key, label: o.label, effect: o.effect }))),
-      onPick: (cell, comment) => {
-        const chosen = cell && opts.find(o => o.key === cell.key);
-        addNote({ kind: 'ask', text: ask, reply: 'Claude (in page): ' + String(res.understood || ''), cannot, tags: ['asked claude'], picked: cell ? cell.key : null,
-          pickedLabel: chosen ? chosen.label : (cell ? 'Current' : 'none'), patch: chosen ? chosen.ops.patch : null, ops: chosen ? chosen.ops : null, comment: comment || '',
-          options: opts.map(o => ({ key: o.key, label: o.label, ops: o.ops })), base: started,
-          baseVersion: S.baseVersion, status: 'addressed', author: 'you', createdAt: new Date().toISOString() }).catch(() => {});
-      },
+      onPick: (cell, comment) => logAsk(cell, comment, 'addressed'),
+      onHandoff: comment => logAsk(null, comment, 'open'), // handed to a round: stays open until Claude replies
     });
   } catch (e) {
     const msg = { cancelled: 'Stopped.', not_granted: 'Asking Claude was not allowed for this page.', rate_limited: 'Too many asks at once. Wait a moment.', invalid_json: 'Claude answered in a way the page could not read. Try again.' }[e.code];
