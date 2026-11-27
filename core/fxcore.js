@@ -1023,6 +1023,59 @@
     return Object.assign(aspects, { overall: +(s / n).toFixed(3) });
   }
 
+  // ------------------------------------------------------------- seams
+  // Hard lines the eye reads as seams: rows or columns where brightness jumps much harder than in the
+  // rows/columns around them, measured across several frames. With animation, only pairs of pixels
+  // that both move count, so outlines and still parts (rocks next to water) are not seams, while a
+  // line that stays put as a pattern flows through it is. imgs: straight RGBA bytes (size x size), one
+  // per frame. Returns [{dir: 'row'|'col', at, jump, typical, ratio, from, to, frames}] strongest
+  // first; the line lies between pixel rows (or columns) at-1 and at.
+  function findSeams(imgs, size, opts) {
+    opts = opts || {};
+    if (!Array.isArray(imgs)) imgs = [imgs];
+    const N = size, F = imgs.length, Ls = [], cov = new Uint8Array(N * N), lo = new Float32Array(N * N).fill(9), hi = new Float32Array(N * N).fill(-9);
+    for (const img of imgs) {
+      const L = new Float32Array(N * N);
+      for (let i = 0; i < N * N; i++) {
+        const a = img[i * 4 + 3] / 255; L[i] = (0.2126 * img[i * 4] + 0.7152 * img[i * 4 + 1] + 0.0722 * img[i * 4 + 2]) / 255 * a;
+        if (a > 0.5) cov[i]++; if (L[i] < lo[i]) lo[i] = L[i]; if (L[i] > hi[i]) hi[i] = L[i];
+      }
+      Ls.push(L);
+    }
+    const moving = i => F < 2 || hi[i] - lo[i] > 0.04, ok = i => cov[i] === F && moving(i);
+    const out = [];
+    for (const dir of ['row', 'col']) {
+      const d = new Float32Array(N), span = [];
+      for (let k = 1; k < N; k++) {
+        let s = 0, n = 0, a = N, b = -1;
+        for (let j = 0; j < N; j++) {
+          const i1 = dir === 'row' ? k * N + j : j * N + k, i0 = dir === 'row' ? (k - 1) * N + j : j * N + k - 1;
+          if (!ok(i1) || !ok(i0)) continue;
+          let v = 0; for (const L of Ls) v += Math.abs(L[i1] - L[i0]); v /= F;
+          s += v; n++; a = Math.min(a, j); b = Math.max(b, j);
+        }
+        d[k] = n >= Math.max(3, N * 0.06) ? s / n : 0; span[k] = [a, b];
+      }
+      const R = opts.radius || 5;
+      for (let k = 2; k < N - 1; k++) {
+        if (!d[k]) continue;
+        const nb = [];
+        for (let q = k - R; q <= k + R; q++) if (q > 0 && q < N && Math.abs(q - k) > 1 && d[q] > 0) nb.push(d[q]);
+        if (nb.length < 3) continue;
+        nb.sort((x, y) => x - y);
+        const typical = nb[nb.length >> 1], ratio = d[k] / (typical + 0.015);
+        if (d[k] > (opts.min || 0.05) && ratio > (opts.ratio || 1.8))
+          out.push({ dir, at: k, jump: +d[k].toFixed(3), typical: +typical.toFixed(3), ratio: +ratio.toFixed(1), from: span[k][0], to: span[k][1], frames: F });
+      }
+    }
+    // neighbouring hits are one line: keep the strongest of each run
+    const keep = [];
+    for (const x of out.sort((p, q) => q.ratio - p.ratio)) if (!keep.some(y => y.dir === x.dir && Math.abs(y.at - x.at) <= 1)) keep.push(x);
+    // four or more parallel lines are a pattern (streaks, bands), probably intended; a lone line is a seam
+    for (const dir of ['row', 'col']) { const same = keep.filter(x => x.dir === dir); if (same.length >= 4) same.forEach(x => { x.pattern = true; }); }
+    return keep.sort((p, q) => (p.pattern ? 1 : 0) - (q.pattern ? 1 : 0) || q.ratio - p.ratio).slice(0, opts.max || 6);
+  }
+
   // ------------------------------------------------------------- catalog
   // One line per layer type: what it is, how it blends, and every parameter with its default and range.
   function catalog(only) {
@@ -1088,7 +1141,7 @@
   }
 
   return {
-    EASE, TYPES, ease, paramSpec, normalizeEffect, registerType, evaluate, catalog, renderLayers, renderFrame, flatten, exportPasses, passGroups, renderPassFrame,
+    EASE, TYPES, ease, paramSpec, normalizeEffect, findSeams, registerType, evaluate, catalog, renderLayers, renderFrame, flatten, exportPasses, passGroups, renderPassFrame,
     attribute, measure, evaluateChecks, metricValue, describeImage, compareDescriptors, diff, applyPatch, hexToRgb, rgbToHex, lum,
   };
 });

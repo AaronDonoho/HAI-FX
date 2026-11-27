@@ -182,6 +182,15 @@ with the preview: `contentError` (mean abs error, 0-255) and `timingSlips`.
 - Mixed blend modes are exported as separate passes (contiguous layers with the same blend),
   drawn in order; additive passes use Add blending. Pixel mode is one palette-locked alpha pass.
 
+## Seams
+`FX.findSeams(frames, size)` finds hard lines that stay put while the effect moves (rows/columns whose
+brightness jump, averaged over frames and counted only between pixels that both move, is well above
+the rows around them); four or more parallel lines are flagged `pattern` (streaks, bands). The
+Studio's **Seams** button shows unusually strong lasting edges and marks seams in red; in-page Ask gets
+the same report (with the layer and sprite row that draws each), seams in every preview, a
+`look_closer` tool for exact pixels, and the artist's open notes; `round.mjs inspect` prints SEAM lines.
+A seam drawn by a sprite at a fixed place is in the sprite's pixels: fix the sprite, not the settings.
+
 ## Measurements
 `FX.measure(effect)` per frame: brightness (energy), coverage, 90% radius (units, 1 = frame
 edge), overdraw, stray pixels (pixel mode). Summary: peak frame, fade frame, max radius, max

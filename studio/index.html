@@ -267,6 +267,8 @@ input[type="color"].swatch::-webkit-color-swatch { border: 0; border-radius: 3px
         <div class="seg" role="group" aria-label="Render mode"><button id="modeSmooth" aria-pressed="true">Smooth</button><button id="modePixel" aria-pressed="false">Pixel</button></div>
         <select id="zoom" aria-label="Zoom" class="hide-sm"><option value="fit">Fit</option><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option></select>
         <label class="hide-sm"><input type="checkbox" id="loopChk" checked> Loop</label>
+        <button class="btn small" id="seamBtn" aria-pressed="false" title="Show where brightness changes sharply, and mark seams: hard lines that stay put while the effect moves">Seams</button>
+        <span class="mono muted" id="seamInfo" hidden></span>
         <button class="summary" id="summary" title="Open measurements"></button>
       </div>
     </section>
@@ -399,7 +401,8 @@ function renderFrames(effect, target, onDone) {
       });
       if (target === S.cache && f === S.frame) draw();
     }
-    if (k < order.length) setTimeout(step, 0); else if (onDone) onDone();
+    if (k < order.length) setTimeout(step, 0);
+    else { target.doneGen = gen; if (target === S.cache && S.seamView) draw(); if (onDone) onDone(); }
   })();
 }
 let renderTimer = 0;
@@ -429,6 +432,60 @@ function paintFrame(ctx, passes, w, hgt) {
   ctx.globalCompositeOperation = 'source-over';
 }
 
+// Seams view: the frame dimmed, with edges that stay put inside moving content drawn bright (the
+// lines the eye reads as seams), and seams marked in red. Found across frames, like FX.findSeams.
+function seamData() {
+  const c = S.cache, F = c.frames.length;
+  if (!F || c.frames.some(f => !f) || c.doneGen !== c.gen) return S.seamCache && S.seamCache.N === c.size && S.seamCache.F === F ? S.seamCache : null; // keep the last until this render is complete
+  if (S.seamCache && S.seamCache.gen === c.gen && S.seamCache.N === c.size) return S.seamCache;
+  const N = c.size, off = document.createElement('canvas'); off.width = off.height = N;
+  const g = off.getContext('2d', { willReadFrequently: true }), frames = sampleFrames(F, 12), Ls = [];
+  for (const f of frames) {
+    g.clearRect(0, 0, N, N); paintFrame(g, c.frames[f], N, N);
+    const d = g.getImageData(0, 0, N, N).data, L = new Float32Array(N * N);
+    for (let i = 0; i < N * N; i++) L[i] = (0.2126 * d[i * 4] + 0.7152 * d[i * 4 + 1] + 0.0722 * d[i * 4 + 2]) / 255 * d[i * 4 + 3] / 255;
+    Ls.push({ L, d });
+  }
+  const lo = new Float32Array(N * N).fill(9), hi = new Float32Array(N * N).fill(-9);
+  for (const { L } of Ls) for (let i = 0; i < N * N; i++) { if (L[i] < lo[i]) lo[i] = L[i]; if (L[i] > hi[i]) hi[i] = L[i]; }
+  const moving = i => Ls.length < 2 || hi[i] - lo[i] > 0.04, pmap = new Float32Array(N * N);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const i = y * N + x; if (!moving(i)) continue;
+    let e = 0;
+    for (const { L } of Ls) e += Math.max(x + 1 < N && moving(i + 1) ? Math.abs(L[i] - L[i + 1]) : 0, y + 1 < N && moving(i + N) ? Math.abs(L[i] - L[i + N]) : 0);
+    pmap[i] = e / Ls.length;
+  }
+  // brightness relative to what is usual for this effect: ordinary band edges stay dark, outliers glow
+  const vals = []; for (let i = 0; i < N * N; i++) if (pmap[i] > 0) vals.push(pmap[i]);
+  vals.sort((a, b) => a - b);
+  const med = vals.length ? vals[vals.length >> 1] : 0;
+  return (S.seamCache = { gen: c.gen, N, F, pmap, med, seams: FX.findSeams(Ls.map(x => x.d), N) });
+}
+function drawSeams(ctx, W) {
+  const sd = seamData(), info = $('seamInfo');
+  if (!sd) return;
+  const { N, pmap, med, seams } = sd, k = W / N;
+  ctx.fillStyle = 'rgba(10,9,14,0.72)'; ctx.fillRect(0, 0, W, W); // the frame stays faintly visible for context
+  const m = new ImageData(N, N);
+  for (let i = 0; i < N * N; i++) { const v = med > 0 ? Math.max(0, Math.min(1, (pmap[i] / med - 1.2) / 1.8)) : Math.min(1, pmap[i] * 3.2); m.data[i * 4] = 255; m.data[i * 4 + 1] = 240; m.data[i * 4 + 2] = 200; m.data[i * 4 + 3] = Math.round(v * 255); }
+  const t = document.createElement('canvas'); t.width = t.height = N; t.getContext('2d').putImageData(m, 0, 0);
+  ctx.imageSmoothingEnabled = false; ctx.drawImage(t, 0, 0, W, W);
+  ctx.lineWidth = Math.max(2, k * 0.35); ctx.font = `${Math.max(11, Math.round(k * 2.2))}px ui-monospace, monospace`;
+  let lab = 0;
+  for (const sm of seams) {
+    // seams in red; lines that are part of a pattern (streaks, bands) in dim amber
+    ctx.strokeStyle = ctx.fillStyle = sm.pattern ? 'rgba(242,184,75,0.5)' : '#ff4d4d';
+    const p = sm.at * k; ctx.beginPath();
+    if (sm.dir === 'row') { ctx.moveTo(sm.from * k, p); ctx.lineTo((sm.to + 1) * k, p); } else { ctx.moveTo(p, sm.from * k); ctx.lineTo(p, (sm.to + 1) * k); }
+    ctx.stroke();
+    if (!sm.pattern) { const dy = 14 + 15 * lab++; ctx.fillText(`${sm.dir} ${sm.at} · ${sm.ratio}×`, sm.dir === 'row' ? sm.from * k + 3 : p + 4, sm.dir === 'row' ? p - 4 : sm.from * k + dy); }
+  }
+  info.hidden = false;
+  const real = seams.filter(s => !s.pattern), pat = seams.length - real.length;
+  info.textContent = (real.length ? `${real.length} seam${real.length > 1 ? 's' : ''}: ${real.map(s => `${s.dir} ${s.at} (${s.ratio}×)`).join(', ')}` : 'No seams') + (pat ? ` · ${pat} pattern lines` : '');
+}
+$('seamBtn').onclick = () => { S.seamView = !S.seamView; $('seamBtn').setAttribute('aria-pressed', String(S.seamView)); if (!S.seamView) $('seamInfo').hidden = true; draw(); };
+
 const stageCanvas = $('stageCanvas');
 // Size the preview to the space it has. Fit uses the largest square that fits (beside the
 // reference, when one is shown); the backing store is a whole multiple of the effect size.
@@ -454,6 +511,7 @@ function draw() {
   const ctx = stageCanvas.getContext('2d');
   paintBg(ctx, W, W);
   paintFrame(ctx, S.cache.frames[S.frame], W, W);
+  if (S.seamView) drawSeams(ctx, W);
   updateTransport();
   drawPins();
   drawCursor();
@@ -1311,6 +1369,48 @@ function frameLook(effect, f) {
   const hex = wa > 0 ? FX.rgbToHex([wr / wa / 255, wg / wa / 255, wb / wa / 255]) : null;
   return { frame: f, coverage: +(cov / (N * N)).toFixed(3), meanColour: hex, map: lines.join('\n') };
 }
+const straight8 = prem => { const o = new Uint8ClampedArray(prem.length); for (let i = 0; i < prem.length; i += 4) { const a = Math.min(1, prem[i + 3]); if (a <= 0) continue; o[i] = Math.min(1, prem[i] / a) * 255 + 0.5; o[i + 1] = Math.min(1, prem[i + 1] / a) * 255 + 0.5; o[i + 2] = Math.min(1, prem[i + 2] / a) * 255 + 0.5; o[i + 3] = a * 255 + 0.5; } return o; };
+function sampleFrames(F, n) { const k = Math.min(n, F), out = []; for (let i = 0; i < k; i++) out.push(Math.round(i * F / k)); return out; }
+// Hard lines that stay put (seams), with the layer that draws each and, for sprite layers, where it sits in the sprite.
+function seamsOf(effect) {
+  const e = FX.normalizeEffect(effect), all = [], per = {};
+  let N = 0;
+  for (const f of sampleFrames(e.canvas.frames, 8)) {
+    const r = FX.renderLayers(e, f, { sources: S.sources }); N = r.size;
+    all.push(straight8(FX.flatten(r.size, r.layers, null)));
+    for (const L of r.layers) (per[L.id] = per[L.id] || []).push(straight8(L.buf));
+  }
+  const u = v => +(v / N * 2 - 1).toFixed(2);
+  return FX.findSeams(all, N).map(sm => {
+    const by = Object.keys(per).filter(id => FX.findSeams(per[id], N, { ratio: 1.5, max: 12 }).some(x => x.dir === sm.dir && Math.abs(x.at - sm.at) <= 1)).map(id => {
+      const l = e.layers.find(x => x.id === id), src = l && l.params.source && S.sources[l.params.source];
+      if (!src || (l.type === 'cycle' && Math.round(l.params.mode || 0) !== 0)) return id;
+      const sz = Math.max(src.w / ((src.grid && src.grid.cols) || 1), src.h / ((src.grid && src.grid.rows) || 1)), sc = l.params.scale || 1;
+      const off = sm.dir === 'row' ? (l.params.offsetY || 0) : (l.params.offsetX || 0), v = (sm.at / N - 0.5 - off * 0.5) / sc + 0.5;
+      return `${id} (from sprite "${l.params.source}", near its pixel ${sm.dir} ${Math.round(v * sz)})`;
+    });
+    return { pattern: !!sm.pattern, line: `${sm.pattern ? 'one of several parallel lines (a pattern such as streaks or bands, probably intended): ' : ''}${sm.dir === 'row' ? 'horizontal' : 'vertical'} line between pixel ${sm.dir}s ${sm.at - 1} and ${sm.at} of ${N} (${sm.dir === 'row' ? 'y' : 'x'} = ${u(sm.at)}u), from ${sm.dir === 'row' ? 'x' : 'y'} ${sm.from} to ${sm.to}`,
+      strength: `brightness jumps ${sm.jump} across it vs ${sm.typical} nearby (${sm.ratio}x), in ${sm.frames} frames; it stays put while the content moves`, drawnBy: by, dir: sm.dir, at: sm.at, size: N };
+  });
+}
+// Exact pixels of a small area: hex colours and which layer draws each (for Claude to check a detail).
+function lookCloser(base, input) {
+  const x0 = Math.max(0, Math.round(+input.x || 0)), y0 = Math.max(0, Math.round(+input.y || 0)), w = Math.max(1, Math.min(16, Math.round(+input.w || 12))), hh = Math.max(1, Math.min(16, Math.round(+input.h || 12)));
+  const x = input.option ? applyAskOption(base, input.option) : null, e = FX.normalizeEffect(x ? x.effect : base);
+  const f = Math.max(0, Math.min(e.canvas.frames - 1, Math.round(+input.frame || 0)));
+  const r = FX.renderLayers(e, f, { sources: S.sources }), N = r.size, img = straight8(FX.flatten(N, r.layers, null));
+  const letters = r.layers.map((L, i) => String.fromCharCode(65 + (i % 26))), rows = [], owners = [];
+  for (let y = y0; y < Math.min(N, y0 + hh); y++) {
+    const cs = [], os = [];
+    for (let xx = x0; xx < Math.min(N, x0 + w); xx++) {
+      const i = (y * N + xx) * 4;
+      cs.push(img[i + 3] < 26 ? '......' : FX.rgbToHex([img[i] / 255, img[i + 1] / 255, img[i + 2] / 255]).slice(1));
+      let best = -1, ba = 0.02; r.layers.forEach((L, k) => { if (L.buf[i + 3] > ba) { ba = L.buf[i + 3]; best = k; } }); os.push(best < 0 ? '.' : letters[best]);
+    }
+    rows.push(`y=${y}: ${cs.join(' ')}`); owners.push(`y=${y}: ${os.join('')}`);
+  }
+  return { frame: f, size: N, from: { x: x0, y: y0 }, colours: rows.join('\n'), layers: r.layers.map((L, k) => `${letters[k]}=${L.id}`).join(' '), drawnBy: owners.join('\n') };
+}
 function lookFrames(effect) { const F = effect.canvas.frames; return [0, Math.round(F / 4), Math.round(F / 2), Math.round(F * 3 / 4)]; }
 function previewReport(base, option) {
   const why = [], x = applyAskOption(base, option || {}, why);
@@ -1321,6 +1421,7 @@ function previewReport(base, option) {
     changes: changeLines(base, x.effect), ignored: why, shaderErrors,
     layers: e.layers.map(l => `${l.id} (${l.type}${l.blend !== FX.TYPES[l.type].blend ? ', ' + l.blend : ''})`).join(' < '),
     frames: lookFrames(e).map(f => frameLook(e, f)),
+    seams: seamsOf(e).map(x => `${x.line}: ${x.strength}; drawn by ${x.drawnBy.join(', ') || 'the layers together'}`),
   };
 }
 const fmtV = v => (v === undefined || v === null ? '-' : typeof v === 'number' ? String(+v.toFixed(3)) : String(v).length > 28 ? '(code)' : String(v));
@@ -1351,12 +1452,15 @@ function askPrompt(ask) {
     'Palette: ' + JSON.stringify(e.palette) + (sprites ? '. Sprites available for "source" parameters: ' + sprites : '. No sprites are uploaded yet.'),
     m ? 'Measured now: brightness peaks at frame ' + m.peakFrame + ', visible until frame ' + m.fadeFrame + ', reaches ' + m.maxRadius + 'u, max coverage ' + Math.round(m.maxCoverage * 100) + '%.' : '',
     S.refs.length ? 'The artist\'s reference images are captioned: ' + S.refs.map(r => JSON.stringify(refName(r))).join('; ') : '',
+    S.askSeams && S.askSeams.length ? 'Seams found in the effect now (hard lines that stay put): ' + S.askSeams.map(x => `${x.line}: ${x.strength}; drawn by ${x.drawnBy.join(', ') || 'the layers together'}`).join(' | ') +
+      '. A seam drawn by a sprite-based layer at a fixed place in its sprite comes from the sprite\'s own pixels: no setting removes it; say so in "cannot", naming the sprite and its row or column, and give options that soften it meanwhile if any.' : '',
+    (() => { const open = S.notes.filter(n => n.kind !== 'ask' && n.status === 'open').slice(0, 8); return open.length ? 'The artist\'s open notes, pinned on frames: ' + open.map(n => `"${String(n.text || n.tags || '').slice(0, 140)}" at frame ${n.frame}, pixel (${Math.round(n.x)}, ${Math.round(n.y)}) of ${n.size}${n.layer ? ', on layer ' + n.layer : ''}${n.hits && n.hits.length ? ' (drawn by ' + n.hits.map(x => `${x.id} ${Math.round(x.share * 100)}%`).join(', ') + ')' : ''}`).join('; ') : ''; })(),
     'The artist asks: ' + JSON.stringify(ask),
     S.askSees ? S.askSees : '',
     e.layers.length ? '' : 'The effect is empty: build it from scratch with added layers.',
     'Give three different ways to do it, from conservative to bold. You may change parameters, add layers of any type above (e.g. sparks with negative gravity for rising particles), remove layers, and reorder them (e.g. move a layer to the bottom to make it a background). Layers can be confined to an area and gpu layers wrapped around a circle. When no layer type draws the shape or motion asked for, write a custom shader layer (type "shader", rules above): that is how new looks get made here, so do it rather than settle for a weak approximation; name its sliders in params.names.',
     'Only if even a custom shader cannot deliver it (it would need to distort the layers below it, a 3D model, or sound), also fill "cannot" with one sentence naming the missing capability so a developer can build it; still give your best approximations as options.',
-    S.askTools ? 'You have a tool, preview_option: it applies an option exactly as the page will, renders it, and tells you what changed, what was ignored and why, shader compile errors, and brightness maps of four frames. Call it for each of your options (in one round), check the maps actually show what the artist asked for, fix what is wrong (preview again if needed), then answer. Never answer with an option you have not previewed.' : '',
+    S.askTools ? 'You have tools. preview_option applies an option exactly as the page will, renders it, and tells you what changed, what was ignored and why, shader compile errors, brightness maps of four frames, and any seams. Call it for each of your options (in one round), check the result does what the artist asked, fix what is wrong (preview again if needed), then answer. Never answer with an option you have not previewed. look_closer returns the exact pixels of a small area of one frame and which layer draws each: use it to check a seam, a note or a detail.' : '',
     'Reply with only JSON: {"understood": "one sentence restating the ask in concrete terms", "cannot": "" , "options": [{"label": "under 60 characters", "patch": {"layerId.param": value, "palette.slot": "#rrggbb"}, "add": [{"type": "sparks", "id": "bubbles", "label": "Bubbles", "params": {"count": 30}, "position": "top" | "bottom", "below": "layerId", "above": "layerId"}, {"type": "shader", "id": "ring", "params": {"code": "vec4 fx(vec2 uv) { ... }", "names": "Radius,Width", "a": 0.4}}], "remove": ["layerId"], "move": [{"id": "layerId", "position": "bottom"}]}, ...three options]}. Omit add/remove/move when unused.',
   ].filter(Boolean).join('\n\n');
 }
@@ -1377,12 +1481,17 @@ async function askOnce(ask, started, ctl, awake) {
   const tier = (!lim.modelTiers || lim.modelTiers.includes('complex')) && (awake || !phone) ? 'complex' : 'default';
   const opt = { signal: ctl.signal, modelTier: tier, cache: false };
   S.askTools = !!lim.tools; S.askSees = '';
+  try { S.askSeams = seamsOf(started); } catch (e) { S.askSeams = []; }
   if (lim.tools) {
     let n = 0;
     opt.tools = [{ name: 'preview_option',
       description: 'Applies one option (the same JSON shape as an option in your answer) to the current effect and renders it. Returns: changes applied, suggestions ignored and why, custom-shader compile errors, the layer order, and for frames 0, 1/4, 1/2, 3/4: coverage, mean colour, and a 32x16 brightness map (" .:-=+*#%@" dark to bright; the frame is square, each character twice as tall as wide).',
       inputSchema: { type: 'object', properties: { option: { type: 'object', description: 'One option: {label, patch, add, remove, move}' } }, required: ['option'] },
-      execute: async input => { n++; $('askStatus').textContent = `Claude is trying its ideas in the page… (${n} preview${n > 1 ? 's' : ''})`; await new Promise(r => setTimeout(r, 0)); return previewReport(started, input && input.option); } }];
+      execute: async input => { n++; $('askStatus').textContent = `Claude is trying its ideas in the page… (${n} preview${n > 1 ? 's' : ''})`; await new Promise(r => setTimeout(r, 0)); return previewReport(started, input && input.option); } },
+    { name: 'look_closer',
+      description: 'Exact pixels of a small area of one frame (up to 16x16): hex colours ("......" where transparent) and a letter per pixel for the layer that draws it, with the letter legend. Coordinates are frame pixels from the top-left; reports give the frame size. Pass "option" to look at an option instead of the current effect.',
+      inputSchema: { type: 'object', properties: { frame: { type: 'integer' }, x: { type: 'integer' }, y: { type: 'integer' }, w: { type: 'integer', description: 'width, max 16' }, h: { type: 'integer', description: 'height, max 16' }, option: { type: 'object' } }, required: ['frame', 'x', 'y'] },
+      execute: async input => { $('askStatus').textContent = 'Claude is looking closely at the pixels…'; await new Promise(r => setTimeout(r, 0)); return lookCloser(started, input || {}); } }];
     delete opt.cache;
   }
   if (lim.images) {

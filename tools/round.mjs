@@ -185,7 +185,7 @@ async function inspect(st, refs) {
     lines.push(`PICK ${p.id} "${p.title}": ${p.pick.key || 'none'}${o ? ' (' + o.label + ')' : ''}${p.pick.comment ? ' — "' + p.pick.comment + '"' : ''}`);
   }
   for (const p of st.proposals.filter(p => p.status === 'open')) lines.push(`OPEN CHOICE ${p.id} "${p.title}" (${(p.options || []).length} options)`);
-  for (const a of st.asks.filter(st.isNew)) lines.push(`ASK "${a.text}" → picked ${a.picked || 'none'} (${a.pickedLabel || ''}) patch ${JSON.stringify(a.patch || {})}${a.comment ? ' — "' + a.comment + '"' : ''}`);
+  for (const a of st.asks.filter(st.isNew)) lines.push(`ASK ${a.id} [${a.status || ''}${a.handedOff ? ', handed off' : ''}] "${a.text}" → picked ${a.picked || 'none'} (${a.pickedLabel || ''}) patch ${JSON.stringify(a.patch || {})}${a.cannot ? ' cannot: "' + a.cannot + '"' : ''}${a.comment ? ' — "' + a.comment + '"' : ''}`);
   const open = st.notes.filter(n => n.status === 'open' && !st.resolved.has(n.id));
   for (const n of open) {
     lines.push(`NOTE ${n.id} f${n.frame} (${n.x},${n.y})/${n.size} on v${n.baseVersion}${(n.unsaved || []).length ? '+' + n.unsaved.length + ' edits' : ''} layer=${n.layer} hits=${(n.hits || []).map(h => h.id + ':' + Math.round(h.share * 100) + '%').join(',')} tags=[${(n.tags || []).join(', ')}] "${n.text || ''}"${st.replied[n.id] ? ' (replied before)' : ''}`);
@@ -200,6 +200,13 @@ async function inspect(st, refs) {
   }
   if (ev.match) lines.push(`CURRENT vs refs: ${fmtMatch(ev.match)}`);
   if (ev.summary.loopJump !== undefined || ev.summary.tileSeam !== undefined) lines.push(`SEAMS loopJump=${ev.summary.loopJump} tileSeam=${ev.summary.tileSeam} (1 = seamless)`);
+  // hard lines that stay put while the effect moves (the same finder the Studio's Seams view and Ask use)
+  const sm = await E.pages[0].evaluate(e => {
+    const n = FXCore.normalizeEffect(e), F = n.canvas.frames, k = Math.min(8, F), imgs = []; let N = 0;
+    for (let i = 0; i < k; i++) { const r = FXCore.renderFrame(e, Math.round(i * F / k), { sources: window.__src }); imgs.push(r.data); N = r.size; }
+    return { N, seams: FXCore.findSeams(imgs, N) };
+  }, e);
+  for (const x of sm.seams) lines.push(`SEAM ${x.pattern ? '(pattern line) ' : ''}${x.dir} ${x.at}/${sm.N} span ${x.from}-${x.to}: jump ${x.jump} vs ${x.typical} nearby (${x.ratio}x)`);
   const srcIds = Object.keys(st.sources);
   if (srcIds.length) lines.push(`SPRITES ${srcIds.join(', ')}`);
 
