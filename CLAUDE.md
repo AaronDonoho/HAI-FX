@@ -24,8 +24,12 @@ will, renders it, and returns what changed, what was ignored and why, shader com
 32x16 brightness maps of four frames, so it checks and fixes options before answering. An
 option can patch params, add layers (any catalog type, at a position), remove or move layers, and
 say what it `cannot` do. When nothing fits, the artist hands it to a round in one tap ("Ask Claude to
-build it" prefills Send to Claude). The ask, the ops and the pick are logged as a note with
-`kind: "ask"` (status addressed) so rounds see them. If Ask keeps answering "cannot", that is a gap
+build it" prefills Send to Claude). Every ask is a `kind: "ask"` item saved the moment it
+starts (`status: running`), updated with its options when they arrive (`open`), and with the pick
+(`addressed`) or `handedOff: true`; `failed`/`cancelled` otherwise. So options survive reloads,
+later asks and phones that sleep: the choice bar and Choices tab reopen them from the database, a
+`running` ask whose page went away offers "Ask again", and a call cut off by sleep reruns itself once
+the page is visible again. Rounds see every ask, including failed ones. If Ask keeps answering "cannot", that is a gap
 in the layer types or ops: fix the gap, not the wording.
 
 If this session is gone, start a new one on the **HAI-FX** cloud environment (its setup script

@@ -679,6 +679,12 @@ function renderChoiceBar() {
   const bar = $('choiceBar'), open = openProposals();
   bar.textContent = '';
   if (S.overlay && S.overlay.kind === 'compare') { bar.hidden = true; return; }
+  const waiting = S.notes.find(n => n.kind === 'ask' && n.status === 'open' && !n.picked && !n.handedOff && Array.isArray(n.options) && n.options.length);
+  if (!open.length && waiting) {
+    bar.append(h('span', { class: 'dot claude' }), h('strong', { text: 'Your ask: ' + String(waiting.text).slice(0, 60) }), h('span', { class: 'muted', text: `${waiting.options.length} options waiting` }),
+      h('div', { class: 'spacer' }), h('button', { class: 'btn claude small', onclick: () => openAsk(waiting) }, 'Show options'));
+    bar.hidden = false; return;
+  }
   if (!open.length) {
     const lc = S.lastCompare;
     if (!lc) { bar.hidden = true; return; }
@@ -898,19 +904,36 @@ function tabChoices(body) {
     h('div', { class: 'meta' }, h('span', { class: 'dot ok' }), h('span', { text: p.title || 'Choice' }), h('span', { text: ago(p.pick && p.pick.at) })),
     h('div', { class: 'txt', text: p.pick && p.pick.key ? `You picked ${p.pick.key}` + (p.pick.comment ? `: ${p.pick.comment}` : '') : 'None fit' + (p.pick && p.pick.comment ? `: ${p.pick.comment}` : '') }),
     h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: () => openProposal(p) }, 'Show options again'))));
-  const asks = S.notes.filter(n => n.kind === 'ask' && Array.isArray(n.options) && n.options.length);
+  const asks = S.notes.filter(n => n.kind === 'ask' && n.status !== 'cancelled');
   if (asks.length) body.append(h('div', { class: 'sec' }, h('h3', { text: 'Your Ask Claude requests' })));
-  for (const a of asks) body.append(h('div', { class: 'card' },
-    h('div', { class: 'meta' }, h('span', { class: 'dot claude' }), h('span', { text: ago(a.createdAt) }), h('span', { text: a.picked ? `you chose ${a.picked}` : 'no pick' })),
-    h('div', { class: 'txt', text: a.text }), a.comment ? h('div', { class: 'reply', text: a.comment }) : null,
-    h('div', { class: 'row' }, h('button', { class: 'btn small', onclick: () => openAsk(a) }, 'Show options again'),
-      a.base ? null : h('span', { class: 'muted', text: 'Shown on your current effect (this older request did not store its starting point).' }))));
+  for (const a of asks) {
+    const has = Array.isArray(a.options) && a.options.length, live = a.status === 'running' && a.id === S.askId;
+    const state = live ? 'asking now…' : a.status === 'running' ? 'stopped when the page slept' : a.status === 'failed' ? 'did not finish' : a.picked ? `you chose ${a.picked}` : a.handedOff ? 'sent to Claude' : has ? `${a.options.length} options waiting` : 'no usable options';
+    body.append(h('div', { class: 'card' },
+      h('div', { class: 'meta' }, h('span', { class: 'dot ' + (has && !a.picked ? 'claude' : a.status === 'failed' || (a.status === 'running' && !live) ? 'warn' : 'ok') }), h('span', { text: ago(a.createdAt) }), h('span', { text: state })),
+      h('div', { class: 'txt', text: a.text }), a.comment ? h('div', { class: 'reply', text: a.comment }) : null,
+      h('div', { class: 'row' },
+        has ? h('button', { class: 'btn small' + (a.picked ? '' : ' claude'), onclick: () => openAsk(a) }, a.picked ? 'Show options again' : 'Show options') : null,
+        !live && !has && (a.status === 'running' || a.status === 'failed') ? h('button', { class: 'btn small', onclick: () => runAsk(a) }, 'Ask again') : null,
+        has && !a.base ? h('span', { class: 'muted', text: 'Shown on your current effect (this older request did not store its starting point).' }) : null)));
+  }
 }
-function openAsk(a) {
+function askOptions(a) {
   const base = a.base ? FX.normalizeEffect(a.base) : S.cur;
+  return { base, opts: (a.options || []).map(o => { const x = o.ops ? applyAskOption(base, o.ops) : null; return { key: o.key, label: o.label, ops: o.ops, effect: x ? x.effect : FX.applyPatch(base, o.patch || {}) }; }) };
+}
+function openAsk(a, live) {
+  const { base, opts } = live || askOptions(a), cannot = a.cannot || '';
   openCompare({
-    title: 'Your ask: ' + String(a.text).slice(0, 80), question: a.reply ? String(a.reply).replace(/^Claude \(in page\): /, 'Claude understood: ') : '', picked: a.picked || undefined,
-    options: [{ key: 'A', label: 'Starting point', effect: base }].concat(a.options.map(o => ({ key: o.key, label: o.label, effect: o.ops ? (applyAskOption(base, o.ops) || { effect: base }).effect : FX.applyPatch(base, o.patch || {}) }))),
+    title: 'Your ask: ' + String(a.text).slice(0, 80),
+    question: (a.reply ? String(a.reply).replace(/^Claude \(in page\): /, 'Claude understood: ') : '') + (cannot ? ` These are approximations; the full version needs: ${cannot}` : ''),
+    picked: a.picked || undefined, handoff: handoffTextFor(a.text, cannot),
+    options: [{ key: 'A', label: a.picked ? 'Starting point' : 'Current', effect: base }].concat(opts.map(o => ({ key: o.key, label: o.label, effect: o.effect, detail: changeLines(base, o.effect).join(' · ') }))),
+    onPick: (cell, comment) => {
+      const ch = cell && opts.find(o => o.key === cell.key);
+      updateAsk(a.id, { picked: cell ? cell.key : null, pickedLabel: ch ? ch.label : (cell ? 'Current' : 'none fit'), patch: ch ? ch.ops.patch : null, ops: ch ? ch.ops : null, comment: comment || '', status: 'addressed' });
+    },
+    onHandoff: comment => updateAsk(a.id, { status: 'open', handedOff: true, comment: comment || '' }), // a round answers it
   });
 }
 
@@ -1312,81 +1335,133 @@ async function handoff(text) {
   await openSend();
   const m = $('sendMsg'); if (m) { m.value = text; m.focus(); }
 }
-async function runAsk() {
-  const ask = $('askText').value.trim();
+// ---- Asks are saved from the moment they start (status running → open with options → addressed),
+// so options never live only in page memory: a reload, a second ask or a sleeping phone loses nothing.
+const updateAsk = (id, fields) => (S.db ? item(id).update(Object.assign({}, fields, { t: now() })).catch(() => {}) : Promise.resolve());
+// one call to Claude: tools, images and tier as the view allows; returns {res, opts}
+async function askOnce(ask, started, ctl, awake) {
+  const lim = S.sample.limits ? await S.sample.limits().catch(() => ({})) : {};
+  // the top tier thinks longest; on a phone that may sleep mid-ask, prefer the faster tier unless the screen is held awake
+  const phone = matchMedia('(pointer: coarse)').matches;
+  const tier = (!lim.modelTiers || lim.modelTiers.includes('complex')) && (awake || !phone) ? 'complex' : 'default';
+  const opt = { signal: ctl.signal, modelTier: tier, cache: false };
+  S.askTools = !!lim.tools; S.askSees = '';
+  if (lim.tools) {
+    let n = 0;
+    opt.tools = [{ name: 'preview_option',
+      description: 'Applies one option (the same JSON shape as an option in your answer) to the current effect and renders it. Returns: changes applied, suggestions ignored and why, custom-shader compile errors, the layer order, and for frames 0, 1/4, 1/2, 3/4: coverage, mean colour, and a 32x16 brightness map (" .:-=+*#%@" dark to bright; the frame is square, each character twice as tall as wide).',
+      inputSchema: { type: 'object', properties: { option: { type: 'object', description: 'One option: {label, patch, add, remove, move}' } }, required: ['option'] },
+      execute: async input => { n++; $('askStatus').textContent = `Claude is trying its ideas in the page… (${n} preview${n > 1 ? 's' : ''})`; await new Promise(r => setTimeout(r, 0)); return previewReport(started, input && input.option); } }];
+    delete opt.cache;
+  }
+  if (lim.images) {
+    try {
+      const imgs = [await contactSheet(started)];
+      const ref = S.sideRef || S.refs[0];
+      if (ref && ref.thumb && lim.images.maxCount > 1) imgs.push(dataUrlBlob(ref.thumb));
+      opt.images = imgs.filter(Boolean);
+      S.askSees = 'Image 1 shows the effect as it is now: frames 0, 1/4, 1/2 and 3/4 of the way through, left to right, over black.' + (opt.images.length > 1 ? ' Image 2 is the artist\'s reference: ' + JSON.stringify(refName(ref)) + '.' : '');
+    } catch (e) { delete opt.images; }
+  }
+  const prompt = askPrompt(ask);
+  let res = await S.sample.json(prompt, opt);
+  const build = r => (r && Array.isArray(r.options) ? r.options : []).slice(0, 4)
+    .map((o, i) => { const x = applyAskOption(started, o || {}); return x && { key: 'BCDE'[i], label: String(o.label || 'Option ' + (i + 1)).slice(0, 80), effect: x.effect, ops: x.ops }; })
+    .filter(Boolean);
+  // custom shaders must compile: one automatic repair round with the compiler's messages, then drop what still fails
+  const broken = list => list.map(o => ({ o, errs: o.effect.layers.filter(l => l.type === 'shader').map(l => [l.id, FXGPU.check(l.params.code)]).filter(x => x[1]) })).filter(x => x.errs.length);
+  let opts = build(res);
+  const bad = broken(opts);
+  if (bad.length) {
+    $('askStatus').textContent = 'Fixing a shader that did not compile…';
+    const fix = prompt + '\n\nYour previous answer: ' + JSON.stringify(res) + '\n\nThese custom shaders failed to compile (line numbers count from the first line of that layer\'s code):\n' +
+      bad.map(b => `option "${b.o.label}": ` + b.errs.map(([id, m]) => `${id}: ${m}`).join('; ')).join('\n') + '\n\nReply with the whole JSON again, fixed.';
+    try { const res2 = await S.sample.json(fix, { signal: ctl.signal, modelTier: tier, cache: false }); const opts2 = build(res2); if (opts2.length) { res = res2; opts = opts2; } } catch (e) { if (e.code === 'cancelled') throw e; }
+    const still = new Set(broken(opts).map(b => b.o));
+    opts = opts.filter(o => !still.has(o));
+  }
+  return { res, opts };
+}
+const whenVisible = () => new Promise(r => { const f = () => { if (!document.hidden) { document.removeEventListener('visibilitychange', f); r(); } }; document.addEventListener('visibilitychange', f); f(); });
+const handoffTextFor = (text, cannot) => `Build this for the "${S.cur.name || EID}" effect: ${text}` + (cannot ? `\nThe in-page Claude says this needs: ${cannot}` : '');
+async function runAsk(again) {
+  const ask = again && again.text ? again.text : $('askText').value.trim();
   if (!ask) { $('askText').focus(); return; }
   if (!S.sample) { toast('Asking needs the Claude app. You can also tell Claude in chat.'); return; }
   if (S.asking) { S.asking.abort(); return; }
   const ctl = new AbortController(); S.asking = ctl;
-  $('askBtn').textContent = 'Stop'; $('askStatus').textContent = 'Claude is thinking… (it tries its ideas before answering: often 1–3 minutes)';
-  const started = clean(S.cur);
+  const started = again && again.base ? again.base : clean(S.cur);
+  const id = again && again.id ? again.id : newId('a'); S.askId = id;
+  $('askBtn').textContent = 'Stop'; $('askStatus').dataset.notice = ''; $('askStatus').textContent = 'Claude is thinking… (it tries its ideas before answering: often a minute or two)';
+  let slept = document.hidden, hiddenAt = document.hidden ? Date.now() : 0;
+  const onVis = () => {
+    if (document.hidden) { slept = true; hiddenAt = Date.now(); return; }
+    // back from sleep with the call still pending: it may have been cut off, so offer a restart
+    if (hiddenAt && Date.now() - hiddenAt > 15000 && S.asking === ctl) {
+      $('askStatus').textContent = 'Still waiting for Claude after your phone slept. ';
+      $('askStatus').append(h('button', { class: 'btn small', onclick: () => { ctl.restart = true; ctl.abort(); } }, 'Restart the ask'));
+    }
+  };
+  document.addEventListener('visibilitychange', onVis);
+  if (S.db) await item(id).set({ kind: 'ask', text: ask, base: started, baseVersion: S.baseVersion, status: 'running', tags: ['asked claude'], author: 'you',
+    createdAt: (again && again.createdAt) || new Date().toISOString(), t: now() }).catch(() => {});
+  let wl = null; try { wl = navigator.wakeLock ? await Promise.race([navigator.wakeLock.request('screen'), new Promise((_, n) => setTimeout(n, 1500))]) : null; } catch (e) { wl = null; } // keeps the screen on, where the app allows it
+  let restart = false;
   try {
-    const lim = await S.sample.limits().catch(() => ({}));
-    const tier = !lim.modelTiers || lim.modelTiers.includes('complex') ? 'complex' : 'default';
-    const opt = { signal: ctl.signal, modelTier: tier, cache: false };
-    S.askTools = !!lim.tools; S.askSees = '';
-    if (lim.tools) {
-      let n = 0;
-      opt.tools = [{ name: 'preview_option',
-        description: 'Applies one option (the same JSON shape as an option in your answer) to the current effect and renders it. Returns: changes applied, suggestions ignored and why, custom-shader compile errors, the layer order, and for frames 0, 1/4, 1/2, 3/4: coverage, mean colour, and a 32x16 brightness map (" .:-=+*#%@" dark to bright; the frame is square, each character twice as tall as wide).',
-        inputSchema: { type: 'object', properties: { option: { type: 'object', description: 'One option: {label, patch, add, remove, move}' } }, required: ['option'] },
-        execute: async input => { n++; $('askStatus').textContent = `Claude is trying its ideas in the page… (${n} preview${n > 1 ? 's' : ''})`; await new Promise(r => setTimeout(r, 0)); return previewReport(started, input && input.option); } }];
-      delete opt.cache;
+    let out = null;
+    for (let attempt = 0; !out; attempt++) {
+      try { out = await askOnce(ask, started, ctl, !!wl); }
+      catch (e) {
+        if (ctl.restart || ((slept || document.hidden) && attempt === 0 && !ctl.signal.aborted && e.code !== 'not_granted' && e.code !== 'rate_limited')) {
+          if (ctl.restart) { restart = true; throw e; }
+          $('askStatus').textContent = 'Your phone slept during the ask; it will ask again when you are back.';
+          await whenVisible(); slept = false;
+          $('askStatus').textContent = 'Your phone slept during the ask; asking again…';
+          continue;
+        }
+        throw e;
+      }
     }
-    if (lim.images) {
-      try {
-        const imgs = [await contactSheet(started)];
-        const ref = S.sideRef || S.refs[0];
-        if (ref && ref.thumb && lim.images.maxCount > 1) imgs.push(dataUrlBlob(ref.thumb));
-        opt.images = imgs.filter(Boolean);
-        S.askSees = 'Image 1 shows the effect as it is now: frames 0, 1/4, 1/2 and 3/4 of the way through, left to right, over black.' + (opt.images.length > 1 ? ' Image 2 is the artist\'s reference: ' + JSON.stringify(refName(ref)) + '.' : '');
-      } catch (e) { delete opt.images; }
-    }
-    const prompt = askPrompt(ask);
-    let res = await S.sample.json(prompt, opt);
-    const build = r => (r && Array.isArray(r.options) ? r.options : []).slice(0, 4)
-      .map((o, i) => { const x = applyAskOption(started, o || {}); return x && { key: 'BCDE'[i], label: String(o.label || 'Option ' + (i + 1)).slice(0, 80), effect: x.effect, ops: x.ops }; })
-      .filter(Boolean);
-    // custom shaders must compile: one automatic repair round with the compiler's messages, then drop what still fails
-    const broken = list => list.map(o => ({ o, errs: o.effect.layers.filter(l => l.type === 'shader').map(l => [l.id, FXGPU.check(l.params.code)]).filter(x => x[1]) })).filter(x => x.errs.length);
-    let opts = build(res);
-    const bad = broken(opts);
-    if (bad.length) {
-      $('askStatus').textContent = 'Fixing a shader that did not compile…';
-      const fix = prompt + '\n\nYour previous answer: ' + JSON.stringify(res) + '\n\nThese custom shaders failed to compile (line numbers count from the first line of that layer\'s code):\n' +
-        bad.map(b => `option "${b.o.label}": ` + b.errs.map(([id, m]) => `${id}: ${m}`).join('; ')).join('\n') + '\n\nReply with the whole JSON again, fixed.';
-      try { const res2 = await S.sample.json(fix, { signal: ctl.signal, modelTier: tier, cache: false }); const opts2 = build(res2); if (opts2.length) { res = res2; opts = opts2; } } catch (e) { if (e.code === 'cancelled') throw e; }
-      const still = new Set(broken(opts).map(b => b.o));
-      opts = opts.filter(o => !still.has(o));
-    }
+    const { res, opts } = out;
     const cannot = res && typeof res.cannot === 'string' ? res.cannot.trim().slice(0, 400) : '';
-    // every ask is recorded, including ones that came back empty or were handed to a round
-    const logAsk = (cell, comment, status) => {
-      const chosen = cell && opts.find(o => o.key === cell.key);
-      addNote({ kind: 'ask', text: ask, reply: 'Claude (in page): ' + String((res && res.understood) || ''), cannot, tags: ['asked claude'], picked: cell ? cell.key : null,
-        pickedLabel: chosen ? chosen.label : (cell ? 'Current' : 'none fit'), patch: chosen ? chosen.ops.patch : null, ops: chosen ? chosen.ops : null, comment: comment || '',
-        options: opts.map(o => ({ key: o.key, label: o.label, ops: o.ops })), base: started,
-        baseVersion: S.baseVersion, status, author: 'you', createdAt: new Date().toISOString() }).catch(() => {});
-    };
-    const handoffText = `Build this for the "${S.cur.name || EID}" effect: ${ask}` + (cannot ? `\nThe in-page Claude says this needs: ${cannot}` : '');
+    const reply = 'Claude (in page): ' + String((res && res.understood) || '');
+    const doc = { id, text: ask, base: started, reply, cannot, options: opts.map(o => ({ key: o.key, label: o.label, ops: o.ops })) };
+    await updateAsk(id, { status: 'open', reply, cannot, options: doc.options });
     if (!opts.length) {
       $('askStatus').textContent = '';
-      $('askStatus').append(cannot ? `Needs something new: ${cannot} ` : 'No usable change came back. ', h('button', { class: 'btn small claude', onclick: () => { logAsk(null, '', 'open'); handoff(handoffText); } }, 'Ask Claude to build it'));
+      $('askStatus').append(cannot ? `Needs something new: ${cannot} ` : 'No usable change came back. ',
+        h('button', { class: 'btn small claude', onclick: () => { updateAsk(id, { handedOff: true }); handoff(handoffTextFor(ask, cannot)); } }, 'Ask Claude to build it'));
       return;
     }
     $('askStatus').textContent = String(res.understood || '').slice(0, 300);
-    openCompare({
-      title: 'Your ask: ' + ask.slice(0, 80),
-      question: (res.understood ? 'Claude understood: ' + String(res.understood).slice(0, 300) : '') + (cannot ? ` These are approximations; the full version needs: ${cannot}` : ''),
-      handoff: handoffText,
-      options: [{ key: 'A', label: 'Current', effect: FX.normalizeEffect(started) }].concat(opts.map(o => ({ key: o.key, label: o.label, effect: o.effect, detail: changeLines(started, o.effect).join(' · ') }))),
-      onPick: (cell, comment) => logAsk(cell, comment, 'addressed'),
-      onHandoff: comment => logAsk(null, comment, 'open'), // handed to a round: stays open until Claude replies
-    });
+    openAsk(doc, { base: FX.normalizeEffect(started), opts });
   } catch (e) {
-    const msg = { cancelled: 'Stopped.', not_granted: 'Asking Claude was not allowed for this page.', rate_limited: 'Too many asks at once. Wait a moment.', invalid_json: 'Claude answered in a way the page could not read. Try again.' }[e.code];
-    $('askStatus').textContent = msg || 'Could not ask Claude right now (' + (e.code || 'error') + ').';
-  } finally { S.asking = null; $('askBtn').textContent = 'Ask'; }
+    if (restart) { S.asking = null; return runAsk({ id, text: ask, base: started }); }
+    if (e.code === 'cancelled') { updateAsk(id, { status: 'cancelled' }); $('askStatus').textContent = 'Stopped.'; return; }
+    updateAsk(id, { status: 'failed', error: e.code || 'error' });
+    const msg = { not_granted: 'Asking Claude was not allowed for this page.', rate_limited: 'Too many asks at once, or your Claude usage limit. Wait a moment.', invalid_json: 'Claude answered in a way the page could not read.' }[e.code];
+    const st = $('askStatus'); st.textContent = (msg || 'The ask did not finish (' + (e.code || 'error') + ').') + ' ';
+    if (e.code !== 'not_granted') st.append(h('button', { class: 'btn small', onclick: () => runAsk({ id, text: ask, base: started }) }, 'Ask again'), ' ',
+      h('button', { class: 'btn small ghost', onclick: () => handoff(handoffTextFor(ask, '')) }, 'Send to Claude instead'));
+  } finally {
+    document.removeEventListener('visibilitychange', onVis);
+    if (wl) wl.release().catch(() => {});
+    if (S.asking === ctl) { S.asking = null; S.askId = null; $('askBtn').textContent = 'Ask'; }
+    renderChoiceBar();
+  }
+}
+// An ask whose page went away mid-call (phone locked, page reloaded) is still marked running: offer to finish it.
+function renderAskNotice() {
+  const st = $('askStatus');
+  if (S.asking || !st) return;
+  const a = S.notes.find(n => n.kind === 'ask' && n.status === 'running' && n.id !== S.askId);
+  if (!a) { if (st.dataset.notice) { st.dataset.notice = ''; st.textContent = ''; } return; }
+  if (st.dataset.notice === a.id) return;
+  st.dataset.notice = a.id; st.textContent = '';
+  st.append(`"${String(a.text).slice(0, 60)}" stopped when the page went to sleep. `,
+    h('button', { class: 'btn small primary', onclick: () => runAsk(a) }, 'Ask again'), ' ',
+    h('button', { class: 'btn small ghost', onclick: () => { updateAsk(a.id, { status: 'cancelled' }); handoff(handoffTextFor(a.text, '')); } }, 'Send to Claude instead'), ' ',
+    h('button', { class: 'btn small ghost', onclick: () => updateAsk(a.id, { status: 'cancelled' }) }, 'Dismiss'));
 }
 $('askBtn').onclick = runAsk;
 $('askText').addEventListener('keydown', e => { if (e.key === 'Enter') runAsk(); });
@@ -1751,7 +1826,7 @@ async function boot() {
       }
       if (PENDING_ASK && S.sample) { $('askText').value = PENDING_ASK; PENDING_ASK = ''; try { history.replaceState(null, '', '#' + EID); } catch (e) {} setTimeout(runAsk, 50); }
     }
-    renderTabs(); drawPins();
+    renderTabs(); drawPins(); renderChoiceBar(); renderAskNotice();
   }, err => { clearTimeout(loading); banner(h('span', { text: 'Saved versions are unavailable right now (' + err.code + '). Edits stay in this tab.' })); });
 }
 boot();
